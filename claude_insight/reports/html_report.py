@@ -6,7 +6,7 @@ No external dependencies — pure HTML/CSS/JS inline.
 """
 
 import json
-import base64
+from html import escape
 
 
 class HTMLReport:
@@ -34,7 +34,27 @@ class HTMLReport:
         tool_data = []
         for tool, count in sorted(self.metrics.tool_usage.items(), key=lambda x: x[1], reverse=True)[:10]:
             tool_data.append({"label": tool, "value": count})
-        
+
+        # Archetype description: prefer the local model's reasoning if present.
+        archetype_desc = (
+            self._esc(self.metrics.llm_archetype_reason)
+            if self.metrics.llm_archetype_reason
+            else self._get_archetype_desc(self.metrics.archetype)
+        )
+
+        # Optional AI-generated profile summary card.
+        summary_card = ""
+        if self.metrics.llm_summary:
+            summary_card = f"""
+<div class="card" style="margin-bottom: 2rem;">
+  <h2>📝 AI Profile Summary</h2>
+  <p style="color: var(--text); line-height: 1.7;">{self._esc(self.metrics.llm_summary)}</p>
+</div>"""
+
+        privacy_badge = "🔒 Zero data uploaded • 100% offline"
+        if self.metrics.llm_model:
+            privacy_badge = f"🔒 Analyzed locally with {self._esc(self.metrics.llm_model)} • Zero data uploaded"
+
         # Build the HTML
         html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -303,9 +323,9 @@ footer {{
 <header>
   <h1>🧠 Claude Insight</h1>
   <p>Your AI Builder Profile — Generated Locally, Kept Private</p>
-  <div class="badge">🔒 Zero data uploaded • 100% offline</div>
+  <div class="badge">{privacy_badge}</div>
 </header>
-
+{summary_card}
 <!-- Top Stats -->
 <div class="grid">
   <div class="card">
@@ -334,7 +354,7 @@ footer {{
       {self._get_archetype_emoji(self.metrics.archetype)}
     </div>
     <div class="archetype-name">{self.metrics.archetype.replace('🏗️ ', '').replace('⚡ ', '').replace('🐛 ', '').replace('🤝 ', '').replace('🤖 ', '')}</div>
-    <div class="archetype-desc">{self._get_archetype_desc(self.metrics.archetype)}</div>
+    <div class="archetype-desc">{archetype_desc}</div>
   </div>
   
   <div class="card">
@@ -424,6 +444,10 @@ footer {{
         
         return html
     
+    def _esc(self, text: str) -> str:
+        """HTML-escape text interpolated into the report."""
+        return escape(str(text))
+
     def _get_archetype_emoji(self, archetype: str) -> str:
         """Get emoji for archetype."""
         emojis = {

@@ -37,6 +37,17 @@ class Message:
     def has_tools(self) -> bool:
         return len(self.tool_calls) > 0
 
+    @property
+    def parsed_time(self) -> Optional[datetime]:
+        """Parse the ISO 8601 timestamp into a datetime, if present and valid."""
+        if not self.timestamp:
+            return None
+        try:
+            # Claude Code writes UTC timestamps like "2024-01-01T12:00:00.000Z"
+            return datetime.fromisoformat(self.timestamp.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            return None
+
 
 @dataclass
 class ToolCall:
@@ -73,6 +84,20 @@ class Session:
     @property
     def total_tool_calls(self) -> int:
         return sum(len(m.tool_calls) for m in self.messages)
+
+    @property
+    def duration_minutes(self) -> float:
+        """Real wall-clock duration from message timestamps.
+
+        Falls back to a rough estimate (2.5 min/message) when the transcript
+        has no usable timestamps.
+        """
+        times = [m.parsed_time for m in self.messages if m.parsed_time is not None]
+        if len(times) >= 2:
+            span = (max(times) - min(times)).total_seconds() / 60
+            if span > 0:
+                return span
+        return self.total_messages * 2.5
     
     @property
     def avg_prompt_length(self) -> float:
@@ -165,6 +190,7 @@ class TranscriptParser:
         content = ""
         tool_calls = []
         thinking = ""
+        timestamp = entry.get("timestamp")
         
         # Extract content based on format
         if "content" in entry:
@@ -220,7 +246,8 @@ class TranscriptParser:
             role=role,
             content=content,
             tool_calls=tool_calls,
-            thinking=thinking
+            thinking=thinking,
+            timestamp=timestamp
         )
     
     def parse_all(self) -> list[Session]:

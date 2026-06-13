@@ -11,6 +11,7 @@ from pathlib import Path
 from claude_insight import __version__
 from claude_insight.parser.transcript import TranscriptParser
 from claude_insight.analyzer.metrics import MetricsAnalyzer
+from claude_insight.analyzer.llm import LocalLLMAnalyzer, DEFAULT_MODEL
 from claude_insight.reports.terminal import TerminalReport
 from claude_insight.reports.html_report import HTMLReport
 
@@ -41,6 +42,16 @@ def main():
         help="Generate and use mock data for testing purposes"
     )
 
+    parser.add_argument(
+        "--no-ai", action="store_true",
+        help="Skip the local AI model and use heuristic analysis only"
+    )
+
+    parser.add_argument(
+        "--model", default=None,
+        help=f"Local Ollama model for AI analysis (default: {DEFAULT_MODEL})"
+    )
+
     args = parser.parse_args()
 
     # 1. Initialize
@@ -61,9 +72,13 @@ def main():
             print("\n   Try running with --mock to see how it looks, or specify a path with --dir")
             sys.exit(1)
 
-    # 4. Analyze
+    # 4. Analyze (deterministic metrics)
     print(f"🧐 Analyzing {len(sessions)} session(s)...")
     aggregate_metrics = analyzer.analyze_all(sessions)
+
+    # 4b. Enrich with a local AI model (Ollama), if available
+    if not args.no_ai:
+        enrich_with_local_model(aggregate_metrics, sessions, args.model)
 
     # 5. Generate Terminal Report
     term_report = TerminalReport(aggregate_metrics)
@@ -76,6 +91,40 @@ def main():
         with open(report_path, "w", encoding="utf-8") as f:
             f.write(html_gen.generate())
         print(f"✨ HTML Report generated: {report_path}")
+
+
+def enrich_with_local_model(metrics, sessions, model=None):
+    """Run the local LLM analysis and merge its output into the metrics.
+
+    Falls back silently to heuristic results if Ollama isn't running or the
+    model isn't installed — the tool always produces a report.
+    """
+    llm = LocalLLMAnalyzer(model=model)
+
+    if not llm.is_available():
+        print(f"   💡 Local model ({llm.model}) not found — using heuristic analysis.")
+        print(f"      Install Ollama and run: ollama pull {llm.model}")
+        return
+
+    print(f"🤖 Analyzing with local model: {llm.model} (this stays on your machine)...")
+
+    sample_prompts = []
+    for session in sessions:
+        sample_prompts.extend(m.content for m in session.user_messages if m.content)
+
+    insights = llm.analyze(metrics, sample_prompts)
+    if not insights:
+        print("   ⚠️  Local model analysis failed — using heuristic results.")
+        return
+
+    # Merge: prefer the model's qualitative judgement, keep numeric metrics.
+    if insights.archetype:
+        metrics.archetype = insights.archetype
+    if insights.recommendations:
+        metrics.growth_recommendations = insights.recommendations
+    metrics.llm_summary = insights.summary
+    metrics.llm_archetype_reason = insights.archetype_reason
+    metrics.llm_model = insights.model
 
 
 def generate_mock_sessions():

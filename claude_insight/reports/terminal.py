@@ -4,6 +4,7 @@ Terminal Report Generator
 Generates beautiful ASCII/text reports of Claude Code analysis.
 """
 
+import textwrap
 from typing import Optional
 
 
@@ -27,7 +28,18 @@ class TerminalReport:
         
         # Archetype
         lines.append(f"   Your Builder Archetype: {self.metrics.archetype}")
+        if self.metrics.llm_archetype_reason:
+            for wrapped in self._wrap(self.metrics.llm_archetype_reason):
+                lines.append(f"   {wrapped}")
         lines.append("")
+
+        # AI profile summary (only when a local model produced one)
+        if self.metrics.llm_summary:
+            lines.append("   📝 Profile Summary")
+            lines.append("   " + "─" * 50)
+            for wrapped in self._wrap(self.metrics.llm_summary):
+                lines.append(f"   {wrapped}")
+            lines.append("")
         
         # Efficiency Score Box
         score = int(self.metrics.efficiency_score)
@@ -102,11 +114,18 @@ class TerminalReport:
         # Footer
         lines.append("   ─────────────────────────────────────────────────────")
         lines.append("   💡 Tip: Run with --report to generate an HTML report")
-        lines.append("   🔒 All analysis performed locally — no data uploaded")
+        if self.metrics.llm_model:
+            lines.append(f"   🔒 Analyzed locally with {self.metrics.llm_model} — no data uploaded")
+        else:
+            lines.append("   🔒 All analysis performed locally — no data uploaded")
         lines.append("")
-        
+
         return "\n".join(lines)
-    
+
+    def _wrap(self, text: str, width: int = 60) -> list:
+        """Wrap prose to fit the terminal report indent."""
+        return textwrap.wrap(text, width=width) or [""]
+
     def _make_bar(self, value: int, width: int = 20) -> str:
         """Create an ASCII progress bar."""
         filled = int((value / 100) * width)
