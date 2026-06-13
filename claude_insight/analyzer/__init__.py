@@ -1,1 +1,1 @@
-# Analyzer module
+"""Metric computation and archetype detection."""

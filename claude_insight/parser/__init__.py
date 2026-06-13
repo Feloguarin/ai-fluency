@@ -1,1 +1,1 @@
-# Parser module
+"""Transcript parsing for Claude Code session files."""

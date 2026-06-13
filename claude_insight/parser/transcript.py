@@ -37,6 +37,17 @@ class Message:
     def has_tools(self) -> bool:
         return len(self.tool_calls) > 0
 
+    @property
+    def parsed_time(self) -> Optional[datetime]:
+        """Parse the ISO 8601 timestamp into a datetime, if present and valid."""
+        if not self.timestamp:
+            return None
+        try:
+            # Claude Code writes UTC timestamps like "2024-01-01T12:00:00.000Z"
+            return datetime.fromisoformat(self.timestamp.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            return None
+
 
 @dataclass
 class ToolCall:
@@ -73,6 +84,20 @@ class Session:
     @property
     def total_tool_calls(self) -> int:
         return sum(len(m.tool_calls) for m in self.messages)
+
+    @property
+    def duration_minutes(self) -> float:
+        """Real wall-clock duration from message timestamps.
+
+        Falls back to a rough estimate (2.5 min/message) when the transcript
+        has no usable timestamps.
+        """
+        times = [m.parsed_time for m in self.messages if m.parsed_time is not None]
+        if len(times) >= 2:
+            span = (max(times) - min(times)).total_seconds() / 60
+            if span > 0:
+                return span
+        return self.total_messages * 2.5
     
     @property
     def avg_prompt_length(self) -> float:
@@ -117,8 +142,10 @@ class TranscriptParser:
                     files.extend(search_path.glob("*.jsonl"))
                     files.extend(search_path.rglob("*.jsonl"))
         
-        # Also check default paths if not explicitly provided or if none found yet
-        if not files:
+        # Only search default paths when no directory was explicitly given.
+        # An explicit (but empty) --dir should find nothing, not silently fall
+        # back to ~/.claude.
+        if self.transcript_dir is None:
             for default_path in self.DEFAULT_PATHS:
                 path = Path(default_path).expanduser()
                 if path.exists():
@@ -155,6 +182,36 @@ class TranscriptParser:
             metadata=metadata
         )
     
+    def _extract_content(self, content_val) -> tuple:
+        """Normalize a content value into (text, tool_calls, thinking).
+
+        Handles a plain string, or a list of content blocks (text / thinking /
+        tool_use) as used by real Claude Code transcripts. Always returns a
+        string for text content so downstream code never sees a raw list.
+        """
+        content = ""
+        tool_calls = []
+        thinking = ""
+
+        if isinstance(content_val, str):
+            content = content_val
+        elif isinstance(content_val, list):
+            for block in content_val:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+                if block_type == "text":
+                    content += block.get("text", "")
+                elif block_type == "thinking":
+                    thinking += block.get("thinking", "")
+                elif block_type == "tool_use":
+                    tool_calls.append({
+                        "type": block.get("name", "unknown"),
+                        "arguments": block.get("input", {}),
+                    })
+
+        return content, tool_calls, thinking
+
     def _parse_entry(self, entry: dict) -> Optional[Message]:
         """Parse a single JSONL entry into a Message."""
         if not isinstance(entry, dict):
@@ -162,36 +219,24 @@ class TranscriptParser:
         
         # Claude Code format: each line is a conversation turn
         role = entry.get("role", "")
-        content = ""
-        tool_calls = []
         thinking = ""
-        
-        # Extract content based on format
-        if "content" in entry:
-            content_val = entry["content"]
-            if isinstance(content_val, str):
-                content = content_val
-            elif isinstance(content_val, list):
-                # Content might be a list of blocks
-                for block in content_val:
-                    if isinstance(block, dict):
-                        if block.get("type") == "text":
-                            content += block.get("text", "")
-                        elif block.get("type") == "thinking":
-                            thinking += block.get("thinking", "")
-                        elif block.get("type") == "tool_use":
-                            tool_calls.append({
-                                "type": block.get("name", "unknown"),
-                                "arguments": block.get("input", {})
-                            })
-        
-        # Alternative format: direct message structure
-        if "message" in entry:
+        timestamp = entry.get("timestamp")
+
+        # Pick the content source. Real Claude Code transcripts nest it under
+        # "message" (with content often a list of blocks); other formats put it
+        # at the top level. Either way, run it through the same extractor.
+        content_val = None
+        if isinstance(entry.get("message"), dict):
             msg_data = entry["message"]
-            if isinstance(msg_data, dict):
-                role = msg_data.get("role", role)
-                content = msg_data.get("content", content)
-        
+            role = msg_data.get("role", role)
+            content_val = msg_data.get("content")
+        elif "content" in entry:
+            content_val = entry["content"]
+
+        content, tool_calls, block_thinking = self._extract_content(content_val)
+        if block_thinking:
+            thinking = block_thinking
+
         # Extract tool calls if present
         if "tool_calls" in entry:
             for tc in entry["tool_calls"]:
@@ -209,9 +254,12 @@ class TranscriptParser:
         
         # Determine role if not explicitly set
         if not role:
-            if "user" in entry or "prompt" in entry:
+            entry_type = entry.get("type", "")
+            if entry_type in ("user", "assistant"):
+                role = entry_type
+            elif "prompt" in entry:
                 role = "user"
-            elif "assistant" in entry or "response" in entry:
+            elif "response" in entry:
                 role = "assistant"
             elif tool_calls:
                 role = "assistant"
@@ -220,7 +268,8 @@ class TranscriptParser:
             role=role,
             content=content,
             tool_calls=tool_calls,
-            thinking=thinking
+            thinking=thinking,
+            timestamp=timestamp
         )
     
     def parse_all(self) -> list[Session]:

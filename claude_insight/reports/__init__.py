@@ -1,1 +1,1 @@
-# Reports module
+"""Terminal and HTML report generation."""

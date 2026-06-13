@@ -277,6 +277,84 @@
             color: #8892b0;
         }
         
+        /* Ways to use */
+        .usage {
+            padding: 60px 0;
+            border-bottom: 1px solid #1a1a2e;
+        }
+
+        .usage h2 {
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: #667eea;
+            margin-bottom: 12px;
+            text-align: center;
+        }
+
+        .usage .subtitle {
+            text-align: center;
+            color: #8892b0;
+            font-size: 15px;
+            margin-bottom: 40px;
+        }
+
+        .usage-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 24px;
+        }
+
+        .usage-card {
+            background: #12121f;
+            border: 1px solid #1e1e2e;
+            border-radius: 12px;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .usage-card .badge-pill {
+            align-self: flex-start;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #4ade80;
+            border: 1px solid #234;
+            border-radius: 9999px;
+            padding: 2px 10px;
+            margin-bottom: 14px;
+        }
+
+        .usage-card h3 {
+            font-size: 18px;
+            margin-bottom: 8px;
+            color: #e0e0e0;
+        }
+
+        .usage-card p {
+            font-size: 14px;
+            color: #8892b0;
+            margin-bottom: 16px;
+            flex-grow: 1;
+        }
+
+        .cmd {
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            font-size: 13px;
+            color: #a8b2d1;
+            background: #0a0a12;
+            padding: 12px 14px;
+            border-radius: 8px;
+            border: 1px solid #1e1e2e;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .cmd + .cmd {
+            margin-top: 8px;
+        }
+
         /* Footer */
         .footer {
             padding: 40px 0;
@@ -335,7 +413,7 @@
                     <span class="copy-hint">Click to copy</span>
                 </div>
                 <div class="requirements">
-                    Requires: <span>Python 3.8+</span> &nbsp;|&nbsp; Works on: <span>macOS, Linux, WSL</span>
+                    Requires: <span>Python 3.9+</span> &nbsp;|&nbsp; Works on: <span>macOS, Linux, WSL</span> &nbsp;|&nbsp; Optional: <span>Ollama or Claude Code for AI analysis</span>
                 </div>
             </div>
             
@@ -384,6 +462,42 @@
         </div>
     </div>
     
+    <div class="usage">
+        <div class="container">
+            <h2>Ways to use it</h2>
+            <p class="subtitle">Pick the flow that fits — every option keeps your data on your machine.</p>
+            <div class="usage-grid">
+                <div class="usage-card">
+                    <span class="badge-pill">Inside Claude Code</span>
+                    <h3>🧩 The /ai-fluency skill</h3>
+                    <p>Run it as a Claude Code skill — Claude Code itself analyzes your sessions. No extra model, no API key, no install beyond the repo.</p>
+                    <div class="cmd">/ai-fluency</div>
+                    <div class="cmd">/ai-fluency --dir ~/.claude/projects</div>
+                </div>
+                <div class="usage-card">
+                    <span class="badge-pill">Standalone + local AI</span>
+                    <h3>🤖 CLI with a local model</h3>
+                    <p>Run the CLI anywhere. A small local model via Ollama (default gemma3:4b) writes your profile — all on-device.</p>
+                    <div class="cmd">ollama pull gemma3:4b</div>
+                    <div class="cmd">claude-insight --dir ~/.claude/projects</div>
+                </div>
+                <div class="usage-card">
+                    <span class="badge-pill">No model needed</span>
+                    <h3>⚡ Heuristic / offline</h3>
+                    <p>Skip the AI entirely for instant, deterministic analysis — handy in CI or when Ollama isn't installed.</p>
+                    <div class="cmd">claude-insight --no-ai</div>
+                    <div class="cmd">claude-insight --report report.html</div>
+                </div>
+                <div class="usage-card">
+                    <span class="badge-pill">For tooling</span>
+                    <h3>🔌 JSON export</h3>
+                    <p>Emit the raw metrics and a sample of prompts as JSON to pipe into your own scripts, dashboards, or models.</p>
+                    <div class="cmd">claude-insight --json --dir ~/.claude/projects</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="how-it-works">
         <div class="container">
             <h2>How it works</h2>

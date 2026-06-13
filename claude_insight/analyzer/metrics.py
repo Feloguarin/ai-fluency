@@ -27,6 +27,7 @@ class PromptMetrics:
     contains_code_snippets: int = 0
     contains_questions: int = 0
     contains_commands: int = 0
+    contains_product_terms: int = 0
 
 
 @dataclass
@@ -36,7 +37,6 @@ class SessionMetrics:
     message_count: int = 0
     prompt_count: int = 0
     tool_call_count: int = 0
-    tool_success_rate: float = 0.0
     code_edits: int = 0
     file_reads: int = 0
     bash_commands: int = 0
@@ -50,6 +50,7 @@ class AggregateMetrics:
     total_prompts: int = 0
     total_messages: int = 0
     total_tool_calls: int = 0
+    total_errors: int = 0
     
     # Time metrics
     total_coding_time_hours: float = 0.0
@@ -78,9 +79,14 @@ class AggregateMetrics:
     # Archetype detection
     archetype: str = "Unknown"
     archetype_scores: dict = field(default_factory=dict)
-    
+
     # Growth edges
     growth_recommendations: list = field(default_factory=list)
+
+    # Local-LLM qualitative analysis (empty when run in heuristic-only mode)
+    llm_summary: str = ""
+    llm_archetype_reason: str = ""
+    llm_model: str = ""
     
     # Efficiency
     efficiency_score: float = 0.0
@@ -119,6 +125,12 @@ class MetricsAnalyzer:
         "build a", "create a", "implement", "deploy", "end-to-end",
         "full", "complete", "entire", "workflow", "automation"
     ]
+
+    # Words that signal outcome/product focus rather than pure mechanics.
+    PRODUCT_KEYWORDS = [
+        "user", "users", "feature", "outcome", "goal", "deliver",
+        "ship", "product", "customer", "experience", "value"
+    ]
     
     def analyze_prompts(self, session) -> PromptMetrics:
         """Analyze prompt quality in a session."""
@@ -138,6 +150,10 @@ class MetricsAnalyzer:
         code_snippets = sum(1 for p in prompts if '`' in p or '```' in p)
         questions = sum(1 for p in prompts if '?' in p)
         commands = sum(1 for p in prompts if any(cmd in p.lower() for cmd in ['run', 'execute', 'test', 'build', 'deploy']))
+        product_terms = sum(
+            1 for p in prompts
+            if any(re.search(r'\b' + kw + r'\b', p.lower()) for kw in self.PRODUCT_KEYWORDS)
+        )
         
         # Calculate specificity score (0-100)
         specificity = min(100, (file_paths / len(prompts) * 40) + 
@@ -156,7 +172,8 @@ class MetricsAnalyzer:
             contains_file_paths=file_paths,
             contains_code_snippets=code_snippets,
             contains_questions=questions,
-            contains_commands=commands
+            contains_commands=commands,
+            contains_product_terms=product_terms
         )
     
     def analyze_session(self, session) -> SessionMetrics:
@@ -166,9 +183,10 @@ class MetricsAnalyzer:
         metrics.message_count = session.total_messages
         metrics.prompt_count = session.total_prompts
         metrics.tool_call_count = session.total_tool_calls
-        
-        # Estimate duration (5 min per message as rough heuristic)
-        metrics.duration_minutes = session.total_messages * 2.5
+
+        # Real wall-clock duration from timestamps (falls back to an estimate
+        # of 2.5 min/message when the transcript has no usable timestamps).
+        metrics.duration_minutes = session.duration_minutes
         
         # Count specific tool types
         tool_usage = session.tool_usage
@@ -196,14 +214,22 @@ class MetricsAnalyzer:
             return "Unknown", {}
         
         prompt_text = " ".join(all_prompts)
-        
+
+        def count_keywords(keywords: list) -> int:
+            # Whole-word/phrase matching so "add" doesn't match "address"
+            # or "build" inside "building".
+            return sum(
+                1 for kw in keywords
+                if re.search(r'\b' + re.escape(kw) + r'\b', prompt_text)
+            )
+
         # Score each archetype
         scores = {
-            "🏗️ Architect": sum(1 for kw in self.ARCHITECT_KEYWORDS if kw in prompt_text),
-            "⚡ Sprinter": sum(1 for kw in self.SPRINTER_KEYWORDS if kw in prompt_text),
-            "🐛 Debugger": sum(1 for kw in self.DEBUGGER_KEYWORDS if kw in prompt_text),
-            "🤝 Collaborator": sum(1 for kw in self.COLLABORATOR_KEYWORDS if kw in prompt_text),
-            "🤖 Autonomous Agent": sum(1 for kw in self.AUTONOMOUS_KEYWORDS if kw in prompt_text),
+            "🏗️ Architect": count_keywords(self.ARCHITECT_KEYWORDS),
+            "⚡ Sprinter": count_keywords(self.SPRINTER_KEYWORDS),
+            "🐛 Debugger": count_keywords(self.DEBUGGER_KEYWORDS),
+            "🤝 Collaborator": count_keywords(self.COLLABORATOR_KEYWORDS),
+            "🤖 Autonomous Agent": count_keywords(self.AUTONOMOUS_KEYWORDS),
         }
         
         # Normalize scores
@@ -223,16 +249,19 @@ class MetricsAnalyzer:
         
         # Base score from prompt quality
         base = 50.0
-        
+
         # Add points for specificity
         base += min(20, metrics.avg_prompt_length / 50)
-        
+
         # Add points for tool diversity
         base += min(15, metrics.tool_diversity / 6)
-        
-        # Subtract for high error rates
-        base -= min(20, metrics.total_sessions * 0.5)
-        
+
+        # Subtract for a high error rate (errors per message), not for simply
+        # having analyzed more sessions.
+        if metrics.total_messages > 0:
+            error_rate = metrics.total_errors / metrics.total_messages
+            base -= min(20, error_rate * 100)
+
         return min(100, max(0, base))
     
     def generate_recommendations(self, metrics: AggregateMetrics) -> list[str]:
@@ -285,6 +314,7 @@ class MetricsAnalyzer:
             metrics.total_messages += sm.message_count
             metrics.total_tool_calls += sm.tool_call_count
             metrics.total_coding_time_hours += sm.duration_minutes / 60
+            metrics.total_errors += sm.error_count
         
         # Tool usage across all sessions
         for session in sessions:
@@ -374,21 +404,21 @@ class MetricsAnalyzer:
         return min(100, ratio * 20)
     
     def _compute_product_score(self, prompt_metrics: list) -> float:
-        """Focus on outcomes (0-100)."""
+        """Focus on outcomes (0-100).
+
+        Based on the share of prompts that actually mention product/outcome
+        terms (user, feature, ship, customer, ...).
+        """
         if not prompt_metrics:
             return 0.0
-        
-        # Prompts that mention user outcomes, features, etc.
+
         total_prompts = sum(pm.total_prompts for pm in prompt_metrics)
         if total_prompts == 0:
             return 50.0
-        
-        # Product-focused keywords
-        product_keywords = ["user", "feature", "outcome", "goal", "deliver", "ship", "product", "customer"]
-        # We don't have the actual text here, so estimate based on specificity
-        # More specific prompts tend to be more product-focused
-        avg_specificity = sum(pm.specificity_score for pm in prompt_metrics) / len(prompt_metrics)
-        return min(100, avg_specificity * 0.8 + 20)
+
+        product_prompts = sum(pm.contains_product_terms for pm in prompt_metrics)
+        # Share of product-focused prompts, scaled to 0-100.
+        return min(100, (product_prompts / total_prompts) * 100)
     
     def _compute_planning_score(self, prompt_metrics: list) -> float:
         """Research-to-build ratio (0-100)."""

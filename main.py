@@ -1,98 +1,13 @@
 #!/usr/bin/env python3
 """
 Claude Insight — Private AI Builder Profiler
-Main CLI Entry Point
+
+Convenience launcher. The real entry point lives in claude_insight.cli,
+which is also exposed via `python -m claude_insight` and the
+`claude-insight` console script.
 """
 
-import argparse
-import sys
-import os
-from pathlib import Path
-
-from claude_insight.parser.transcript import TranscriptParser
-from claude_insight.analyzer.metrics import MetricsAnalyzer
-from claude_insight.reports.terminal import TerminalReport
-from claude_insight.reports.html_report import HTMLReport
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Claude Insight: Private AI Builder Analytics",
-        formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    
-    parser.add_argument(
-        "--dir", "-d", 
-        help="Directory containing Claude Code .jsonl transcripts (default: ~/.claude/projects)"
-    )
-    
-    parser.add_argument(
-        "--report", "-r", 
-        help="Generate an HTML report file (e.g., report.html)"
-    )
-    
-    parser.add_argument(
-        "--mock", action="store_true",
-        help="Generate and use mock data for testing purposes"
-    )
-
-    args = parser.parse_args()
-
-    # 1. Initialize
-    analyzer = MetricsAnalyzer()
-    
-    # 2. Handle Mock Data
-    if args.mock:
-        print("🧪 Using mock data for analysis...")
-        sessions = generate_mock_sessions()
-    else:
-        # 3. Parse Transcripts
-        transcript_parser = TranscriptParser(args.dir)
-        sessions = transcript_parser.parse_all()
-        
-        if not sessions:
-            print("❌ No Claude Code transcripts found.")
-            print("   Default paths searched: ~/.claude/projects, ~/.claude/sessions")
-            print("\n   Try running with --mock to see how it looks, or specify a path with --dir")
-            sys.exit(1)
-
-    # 4. Analyze
-    print(f"🧐 Analyzing {len(sessions)} session(s)...")
-    aggregate_metrics = analyzer.analyze_all(sessions)
-
-    # 5. Generate Terminal Report
-    term_report = TerminalReport(aggregate_metrics)
-    print(term_report.generate())
-
-    # 6. Generate HTML Report
-    if args.report:
-        html_gen = HTMLReport(aggregate_metrics)
-        report_path = Path(args.report).absolute()
-        with open(report_path, "w", encoding="utf-8") as f:
-            f.write(html_gen.generate())
-        print(f"✨ HTML Report generated: {report_path}")
-
-def generate_mock_sessions():
-    """Generates mock session data for testing the analyzer logic."""
-    from dataclasses import dataclass, field
-    from claude_insight.parser.transcript import Session, Message
-    
-    # Session 1: The Architect
-    s1 = Session(session_id="arch-001")
-    s1.messages = [
-        Message(role="user", content="I want to design a new architecture for a microservice. Let's compare patterns."),
-        Message(role="assistant", content="Thinking...", tool_calls=[{"type": "Read", "input": {"path": "main.py"}}]),
-        Message(role="user", content="Before implementing, let's create a detailed plan for the interface."),
-    ]
-    
-    # Session 2: The Sprinter
-    s2 = Session(session_id="sprint-001")
-    s2.messages = [
-        Message(role="user", content="Quick, add a simple endpoint to the API."),
-        Message(role="assistant", content="Sure.", tool_calls=[{"type": "Write", "input": {"path": "api.py"}}]),
-        Message(role="user", content="Now implement the user auth quickly."),
-    ]
-    
-    return [s1, s2]
+from claude_insight.cli import main
 
 if __name__ == "__main__":
     main()

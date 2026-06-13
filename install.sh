@@ -14,15 +14,15 @@ echo "============================"
 # Check Python version
 if ! command -v python3 &> /dev/null; then
     echo "❌ Python 3 is required but not found."
-    echo "   Install Python 3.8+ and try again."
+    echo "   Install Python 3.9+ and try again."
     exit 1
 fi
 
 PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-REQUIRED_VERSION="3.8"
+REQUIRED_VERSION="3.9"
 
 if [ "$(printf '%s\n' "$REQUIRED_VERSION" "$PYTHON_VERSION" | sort -V | head -n1)" != "$REQUIRED_VERSION" ]; then
-    echo "❌ Python 3.8+ required. Found: $PYTHON_VERSION"
+    echo "❌ Python 3.9+ required. Found: $PYTHON_VERSION"
     exit 1
 fi
 

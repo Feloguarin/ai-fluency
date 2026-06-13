@@ -2,9 +2,9 @@
 # Private, local AI coding session analyzer
 # No network calls, no telemetry, no external dependencies beyond these:
 
-# Core (stdlib only, but these make it better)
-# No external requirements needed for basic functionality
-# Everything runs with Python 3.8+ standard library
+# Core: no pip dependencies. Everything runs on the Python 3.9+ standard
+# library, including the Ollama HTTP calls (via urllib).
 
-# Optional enhancements (install if you want prettier reports)
-# rich>=13.0.0        # For beautiful terminal output
+# Optional, NOT a pip package — for local AI analysis:
+#   Install Ollama from https://ollama.com and run:  ollama pull gemma3:4b
+# Without it, Claude Insight falls back to heuristic analysis automatically.
