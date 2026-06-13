@@ -2,15 +2,28 @@
 
 A **private, local, AI-powered** analysis tool for your Claude Code sessions. Understand how you build with AI — without your data ever leaving your machine.
 
+## ⚡ One command (recommended)
+
+```bash
+python3 insight.py
+```
+
+That's it. No install, no pip, no Ollama, no API key, fully offline. It reads
+`~/.claude/projects`, writes a deep, self-contained `ai_fluency_report.html`, and
+opens it in your browser. (Inside Claude Code, run `/ai-fluency`.)
+
 ## 🚀 What It Does
 
-Claude Insight parses your local Claude Code transcript files and generates:
+Claude Insight (v2, `insight.py`) parses your local Claude Code transcripts and generates:
 
-- **Builder Archetype** — Are you an Architect, Sprinter, Debugger, Collaborator, or Autonomous Agent?
-- **Efficiency Score** — How effectively you steer AI coding tools
-- **Prompt Quality Analysis** — Specificity, context, iteration patterns
-- **Session Insights** — Duration, token usage, tool utilization
-- **Growth Recommendations** — Concrete improvements based on your patterns
+- **Overall AI Fluency Score (0–100)** — with a calibrated band (Operator → Expert) and what it means
+- **Builder Archetype** — Director, Craftsman, Explorer, Sprinter, or Orchestrator — derived from your scores, not keywords
+- **Five Dimensions** — Direction, Verification, Context-setting, Iteration, Toolcraft, each a defensible rate
+- **A Skill Map** — six AI-collaboration skills placed on a 1–5 level rubric, with the next move for each
+- **What / Where / How** — your top growth levers, each with real evidence from your transcripts and a copy-paste prompt rewrite
+- **Full data-ingested transparency** — how many real prompts (vs. tool-output/subagent/injected noise), projects, MB, and active time it's based on
+
+> **Accuracy first.** Every score is a *rate* over your **real, de-contaminated prompts** pushed through a saturating curve — so using Claude *more* can never raise your score, only using it *better* can. Tool-results, subagent turns, slash-command stubs, injected system text and pasted walls of text are filtered out before anything is scored, and idle time is excluded from "active hours." Thin signals are flagged "low data" and hedged toward neutral instead of faking confidence. See **Methodology** in the report.
 
 ## 🔒 Privacy First
 
@@ -54,28 +67,31 @@ Claude Code, just run:
 
 ```
 /ai-fluency
-/ai-fluency --dir ~/.claude/projects
-/ai-fluency --mock
 ```
 
-The skill runs the deterministic data engine (`claude-insight --json`) and then
-**Claude Code performs the qualitative AI-fluency analysis itself** — archetype,
-strengths, growth edges, and personalized recommendations grounded in your
-actual prompts. No separate model, no API key, no Ollama required. The skill is
-also auto-discovered when you ask Claude Code to "analyze my AI fluency" or
-"profile how I use Claude Code".
+The skill runs `python3 insight.py` (the accurate v2 engine), which writes the
+full HTML report, and then Claude Code gives you a short plain-English read on
+top of it. It's also auto-discovered when you ask Claude Code to "analyze my AI
+fluency" or "profile how I use Claude Code".
 
 ### Data export
 
-The JSON the skill consumes is available directly:
+The machine-readable metrics are available directly:
 
 ```bash
-claude-insight --json --dir ~/.claude/projects   # metrics + sample prompts, to stdout
+python3 insight.py --json                 # accurate v2 metrics + data-ingested breakdown
+python3 insight.py /path/to/transcripts   # analyze a specific directory
+python3 insight.py --no-open              # don't auto-open the browser
 ```
 
-## 📦 Installation
+## 📦 Installation (legacy package — optional)
 
-### One-liner (recommended)
+> You don't need this for the recommended path. `python3 insight.py` runs
+> standalone with zero install. The steps below install the older
+> `claude-insight` package/CLI (which also offers an offline local-Ollama mode).
+> The v2 single-file engine is the most accurate entry point.
+
+### One-liner
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Feloguarin/claude-insight/main/install.sh | bash
 ```
@@ -173,12 +189,14 @@ claude_insight/
 4. **Product Instinct** — Focus on outcomes vs. process
 5. **Planning** — Research-to-build ratio
 
-### Archetypes
-- **🏗️ Architect** — Plans extensively, low code churn
-- **⚡ Sprinter** — High velocity, rapid iteration
-- **🐛 Debugger** — Methodical problem-solving
-- **🤝 Collaborator** — Seeks alignment, asks questions
-- **🤖 Autonomous Agent** — Delegates end-to-end workflows
+### Archetypes (v2 — derived from your scores, not keywords)
+- **🎬 The Director** — hands over whole jobs with a clear brief, steers with sharp corrections
+- **🛠️ The Craftsman** — works close to the code: read first, change precisely, verify every step
+- **🧭 The Explorer** — understands a system before changing it; curiosity-led
+- **⚡ The Sprinter** — fast and direct, many tools, low ceremony; verification is the growth edge
+- **🪄 The Orchestrator** — routes the right work to the right mechanism (subagents, background jobs, planning)
+
+The archetype is the nearest prototype to your five-dimension vector; near-ties are reported as a blend, never a coin-flip.
 
 ## 🔧 Development
 

@@ -1,71 +1,63 @@
 ---
 name: ai-fluency
-description: Analyze how the developer collaborates with Claude Code and produce an "AI fluency" builder profile — archetype, strengths, growth edges, and personalized recommendations. Use when the user asks to analyze their Claude Code usage, AI fluency, builder profile, prompting style, or "how do I use Claude / AI", or runs /ai-fluency.
-argument-hint: "[--dir PATH | --mock]"
+description: Analyze how the developer collaborates with Claude Code and produce an "AI fluency" builder profile — overall score, archetype, a skill map, the five dimensions, and clear what/where/how direction. Use when the user asks to analyze their Claude Code usage, AI fluency, builder profile, prompting style, or "how do I use Claude / AI", or runs /ai-fluency.
+argument-hint: "[PATH | --no-open]"
 allowed-tools: Bash(python3 *), Read, Write
 ---
 
 # AI Fluency Analysis
 
 You are profiling how this developer collaborates with AI coding tools, using
-their real Claude Code session transcripts. Claude Insight computes the
-**numbers** deterministically; **you** provide the qualitative judgement.
+their real Claude Code session transcripts. The v2 engine (`insight.py`) computes
+an accurate, deep, self-contained report; your job is to run it and give the
+developer a short, human, plain-English read on top of it.
 
-## Step 1 — Collect the data
+## Step 1 — Run the one command
 
-Run the collector. It prints JSON with aggregate `metrics` and a `sample_prompts`
-array (the developer's actual prompts). Pass through any argument the user gave
-(e.g. `--dir ~/.claude/projects`, or `--mock` to demo with fake data):
-
-```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/collect.py $ARGUMENTS
-```
-
-If it prints an error about no transcripts found, tell the user to point at
-their transcript directory with `--dir PATH` (default search paths are
-`~/.claude/projects` and `~/.claude/sessions`), or try `--mock` for a demo.
-
-## Step 2 — Analyze
-
-Read the JSON. Ground every claim in the data — cite specific numbers from
-`metrics` and quote or paraphrase real prompts from `sample_prompts`. Treat the
-heuristic `archetype` and `archetype_scores` as hints, not gospel: form your own
-judgement from the prompts.
-
-Determine, in order:
-
-1. **Builder archetype** — pick exactly one and justify it from the prompts:
-   - 🏗️ **Architect** — plans/designs before building
-   - ⚡ **Sprinter** — high velocity, direct action, rapid iteration
-   - 🐛 **Debugger** — methodical problem-solving and error-hunting
-   - 🤝 **Collaborator** — seeks alignment, asks for opinions/reviews
-   - 🤖 **Autonomous Agent** — delegates end-to-end workflows
-2. **The five dimensions** (`steering`, `execution`, `engineering`, `product`,
-   `planning` in `metrics`) — interpret each score in plain language; note the
-   standout strength and the weakest dimension.
-3. **AI fluency read** — how effectively do they steer the model? Look at prompt
-   length/specificity, whether prompts include file paths and concrete
-   constraints, how they iterate, and tool diversity.
-4. **3 specific, actionable recommendations** — tied to what you actually saw in
-   their prompts, not generic advice. Each should name the behavior to change
-   and what to do instead.
-
-## Step 3 — Present
-
-Give a concise profile: archetype (with one-line reasoning), a 2–3 sentence
-summary, the dimension read, and the 3 recommendations. Lead with the headline
-(their archetype and the single most useful thing to improve).
-
-If the user wants a shareable artifact, offer to generate the HTML report:
+From the repo root (the engine is pure standard library — no install, no Ollama,
+no API key, fully offline):
 
 ```bash
-python3 -m claude_insight $ARGUMENTS --no-ai --report report.html
+python3 insight.py --no-open $ARGUMENTS
 ```
+
+This writes `ai_fluency_report.html` and prints a 3-line summary (score, band,
+archetype). Pass `--no-open` inside Claude Code so it doesn't try to launch a
+browser. To point at a non-default location, pass a path as `$ARGUMENTS`
+(default search: `~/.claude/projects`).
+
+Then read the machine-readable metrics for your narration:
+
+```bash
+python3 insight.py --json $ARGUMENTS
+```
+
+If it reports no transcripts, tell the user to pass their transcript directory
+as an argument (default is `~/.claude/projects`).
+
+## Step 2 — Narrate (don't re-derive)
+
+The engine already did the measurement accurately — every score is a RATE over
+de-contaminated real prompts, so DON'T recompute numbers or second-guess the
+filtering. Read the `--json` output and:
+
+1. Lead with the headline: **overall score + band + archetype**, in one sentence.
+2. Explain the **single top growth lever** (the first WHAT/WHERE/HOW priority)
+   in plain English, grounded in one of their real prompts.
+3. Call out their **strongest dimension** as the foundation to build on.
+4. Mention the **data the report is based on** (real prompts, projects, span) so
+   they trust it — and note that the headline length/time numbers exclude
+   tool-output, subagent turns and idle time (the things v1 wrongly counted).
+
+Keep it to a short, encouraging paragraph or two. The HTML report has the full
+depth (five dimensions, skill map, archetype affinity, methodology); point the
+user to `ai_fluency_report.html` for the deep dive.
 
 ## Notes
 
-- All of this runs locally. Transcripts are read on this machine and analyzed by
-  you (Claude Code) — nothing is uploaded and no API key is involved.
-- The standalone tool also has an offline mode that uses a local Ollama model
-  instead of you; this skill is the path for when the user is already in Claude
-  Code. See the repo README.
+- Everything runs locally and read-only. Transcripts are analyzed on this
+  machine; nothing is uploaded and no API key is involved.
+- The scores measure observable behavior, not intent; thin signals are flagged
+  "low data" and pulled toward neutral, so don't over-claim on those.
+- The legacy package (`python -m claude_insight`) and its local-Ollama path still
+  exist, but `insight.py` is the recommended, most accurate entry point.
