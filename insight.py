@@ -131,6 +131,66 @@ DISPLAY_NAMES = {"Direction": "Briefing", "Verification": "Verification",
 def disp(name):
     return DISPLAY_NAMES.get(name, name)
 
+# Teacher content for each skill (kind, plain-English, with before/after examples and a
+# weekly practice). Used to make the report explain what to improve and exactly how.
+SKILL_TEACH = {
+    "Direction": {
+        "what_it_is": "Telling the agent what you want and giving it something to aim at: a goal plus a file, a constraint, or a way to know it worked.",
+        "why_it_matters": "When your goal and your limits are clear up front, the agent gets it right the first time instead of guessing and pulling you into rounds of fixes.",
+        "how_to_improve": "Before you hit enter, add one anchor to your goal: the file to touch, a rule it must not break, or a 'done when…' line. One line is plenty.",
+        "examples": [
+            {"before": "fix the login bug", "after": "Users stay logged out after a correct password on Safari. The check lives in src/auth/session.ts. Fix it so a valid login sets the session cookie, and keep the current tests green."},
+            {"before": "add caching to the API", "after": "Cache GET /products responses in api/products.py for 60s to ease DB load on repeat reads. Don't cache authed requests, and add a test that a second call within 60s skips the DB."},
+        ],
+        "practice": "Before sending a prompt, add one anchor to your goal: a file path, a constraint, or a 'done when…' line.",
+        "good_looks_like": "Every request says what you want plus where to work or how success is judged, so the agent acts instead of guessing.",
+    },
+    "Verification": {
+        "what_it_is": "Having the agent prove its own work — run the tests, build, lint, or launch the app — before it tells you it's done.",
+        "why_it_matters": "Code that looks right but was never run is where most AI bugs hide; checking it turns “probably works” into “I watched it work.”",
+        "how_to_improve": "In the same prompt that asks for the change, name the exact command that proves it (a test, build, lint, or curl) and tell the agent to run it and show you the output before stopping.",
+        "examples": [
+            {"before": "Fix the off-by-one in the pagination helper.", "after": "Fix the off-by-one in the pagination helper, then run `pytest tests/test_pagination.py -x` and paste the output. Don't call it fixed until that test passes."},
+            {"before": "Add a /health endpoint to the FastAPI server.", "after": "Add a /health endpoint to the FastAPI server. Start it on port 8000, curl `localhost:8000/health`, and show me the response. Run `ruff check` too and confirm it's clean before you finish."},
+        ],
+        "practice": "Before you accept any change, ask: “How did you verify this? Run it and show me the output.”",
+        "good_looks_like": "Every change ends with proof — a passing test, a green build, a real response — pasted back to you, not just a claim.",
+    },
+    "Context": {
+        "what_it_is": "Pointing the agent at the real code — a file, a function, a line area — and having it read that before it changes anything.",
+        "why_it_matters": "When the agent sees the actual current code first, its edits fit what's really there instead of a guess, so they apply cleanly the first time.",
+        "how_to_improve": "Before any edit, name the exact file (and the function or area if you can) and tell the agent to read it first. Let it look before it leaps.",
+        "examples": [
+            {"before": "Add retry logic to the API client.", "after": "Read src/api/client.ts first, then add retry-with-backoff to the request() method. Show me the change before you apply it."},
+            {"before": "Fix the timezone bug in the date formatter.", "after": "Open src/utils/date.ts and find formatDate(). Read how it handles timezones now, then fix the off-by-one so UTC inputs render in the user's local zone."},
+        ],
+        "practice": "Start your next edit request with “Read <file> first, then…” so the agent grounds itself before touching anything.",
+        "good_looks_like": "Every edit lands on code the agent just read, so diffs apply cleanly with nothing broken around them.",
+    },
+    "Iteration": {
+        "what_it_is": "When the agent goes the wrong way, steering it back with a precise correction — naming what broke and the rule to follow — instead of just “no” or “try again.”",
+        "why_it_matters": "A precise correction lands the fix in one round; a vague “no” makes the agent guess again, and you burn turns while the code drifts further off.",
+        "how_to_improve": "When a result is wrong, say three things in one message: the symptom you saw, the rule it broke, and what to do instead. Then let it run.",
+        "examples": [
+            {"before": "no that's not right, try again", "after": "The retry loop catches the exception but never re-raises after the last attempt, so failures look like successes. Re-raise the original error once retries run out, and keep the existing backoff."},
+            {"before": "this is wrong, fix the test", "after": "The test passes because you mocked the function under test instead of the network call. Don't mock get_user — mock requests.get inside it, and assert it was called with the real URL."},
+        ],
+        "practice": "Before sending a correction, check it names both the symptom and the rule. If it only says “no,” add the missing half.",
+        "good_looks_like": "One sharp correction — symptom, rule, and the fix — and the agent lands it on the next try.",
+    },
+    "Toolcraft": {
+        "what_it_is": "Letting the agent use the right tool for each step — searching the code, running commands, starting the app, working in the background — instead of forcing everything through chat.",
+        "why_it_matters": "The agent works faster and more reliably when it searches and runs things for real, rather than reasoning about the code from memory.",
+        "how_to_improve": "Tell the agent which action to take first — search the codebase, run the suite, start the server — so it gathers facts and checks its work with the tool built for each step.",
+        "examples": [
+            {"before": "How does login work in this app?", "after": "Search the codebase for the login flow (grep for auth, session, login), read the files you find, then explain how a request goes from form submit to a logged-in session."},
+            {"before": "Add a retry to the API client, and make sure the tests still pass.", "after": "Add retry-with-backoff to the API client. Then run the suite in the background; if anything fails, read the failure, fix it, and report back when it's green."},
+        ],
+        "practice": "Add one line to your next task telling the agent which action to take first: “search for…”, “run the tests”, or “start the server and check.”",
+        "good_looks_like": "You hand off a whole job and the agent searches, edits, runs, and verifies on its own — each step using the tool made for it.",
+    },
+}
+
 BANDS = [
     ("Operator", 0, 39, "You use the agent as fast hands. Prompts are short and underspecified, "
      "edits often happen without reading the file first, and changes are rarely verified. The "
@@ -161,18 +221,19 @@ AGENCY = {"Direction": 1.0, "Verification": 0.35, "Context": 0.15,
           "Iteration": 1.0, "Toolcraft": 0.8, "Delegation": 1.0}
 
 # Prototype vectors over ARCHETYPE_AXES (0-100). Delegation is the axis that separates
-# a hands-off delegator from a hands-on builder.
+# a hands-off delegator from a hands-on builder. These are the five explicit, recognizable
+# builder archetypes; the classifier picks the nearest one from your AGENCY-WEIGHTED vector.
 PROTOTYPES = {
-    "The Orchestrator":  {"emoji": "🪄", "vec": [76, 72, 68, 68, 92, 96],
-        "blurb": "You hand whole jobs to the right mechanism — subagents, background jobs, planning, a broad tool range — and keep many things moving at once. You direct the work; the agent does the hands-on part."},
-    "The Director":      {"emoji": "🎬", "vec": [56, 60, 60, 66, 64, 92],
-        "blurb": "You delegate entire outcomes and trust the agent to run them end-to-end, steering with quick, confident nudges rather than hands-on edits or long briefs."},
-    "The Craftsman":     {"emoji": "🛠️", "vec": [66, 90, 90, 75, 50, 14],
-        "blurb": "You work close to the code yourself: read first, change precisely, verify every step. High discipline, hands-on, little delegation."},
-    "The Explorer":      {"emoji": "🧭", "vec": [70, 46, 88, 60, 52, 34],
-        "blurb": "You understand before you act — read and explore a system first, then change it. Curiosity-led, mostly hands-on."},
-    "The Sprinter":      {"emoji": "⚡", "vec": [46, 35, 52, 46, 55, 26],
-        "blurb": "Fast and direct: terse prompts, quick turns, low ceremony, mostly hands-on yourself. Great velocity; briefing and verification are the growth edges."},
+    "Autonomous Agent": {"emoji": "🤖", "vec": [58, 65, 62, 62, 85, 96],
+        "blurb": "You delegate whole, end-to-end jobs and trust the agent to run them — you set the outcome and let Claude pick the steps."},
+    "Architect":        {"emoji": "🏗️", "vec": [80, 66, 88, 65, 60, 48],
+        "blurb": "You plan and explore before you build — you read and design first, so changes land on a clear structure."},
+    "Debugger":         {"emoji": "🐛", "vec": [62, 88, 82, 85, 60, 28],
+        "blurb": "You hunt problems methodically — read to diagnose, change, verify, and repeat until it's truly fixed."},
+    "Collaborator":     {"emoji": "🤝", "vec": [66, 62, 66, 80, 55, 38],
+        "blurb": "You work with the agent like a teammate — ask for options, give feedback, and steer toward alignment."},
+    "Sprinter":         {"emoji": "⚡", "vec": [45, 38, 52, 46, 62, 30],
+        "blurb": "You move fast and direct — terse prompts, quick turns, low ceremony. Great velocity; briefing and verification are the growth edges."},
 }
 ARCHETYPE_MARGIN = 0.06   # cosine-similarity margin below which we emit a blended label
 
@@ -666,46 +727,15 @@ def analyze(corpus):
 
 
 def build_action_plan(corpus, result):
-    """WHAT / WHERE / HOW cards, ranked by impact = (target - score) * weight."""
+    """Growth cards ranked by impact = (target - score) * weight. The teaching copy
+    comes from SKILL_TEACH; user-specific evidence comes from result['evidence']."""
     TARGET = 85
     cards = []
-    plan_text = {
-        "Direction": {
-            "what": "Front-load one constraint and the 'why' before the agent acts.",
-            "how_before": _shortest_action_prompt(corpus) or "run it",
-            "how_after": lambda b: f"{b} — confirm it works before we move on; I need it ready for the demo.",
-            "target": "Name a goal + one anchor (path / constraint / acceptance test) in ~1 of every 2 action prompts.",
-        },
-        "Verification": {
-            "what": "End each burst of edits by actually running something (test, build, or app launch).",
-            "how_before": "make the change",
-            "how_after": lambda b: f"{b}, then run the tests / launch it and confirm it works before moving on.",
-            "target": "Verify 60%+ of edit-episodes (run pytest / the app / a port-probe after edits).",
-        },
-        "Context": {
-            "what": "Have the agent read the target file before it edits it.",
-            "how_before": "change live_server.py",
-            "how_after": lambda b: f"read {b.split()[-1] if b.split() else 'the file'} first, then make the change.",
-            "target": "Keep grounded-edits above 85% (read or point at the file before changing it).",
-        },
-        "Iteration": {
-            "what": "When correcting, name the symptom AND the exact rule in one line.",
-            "how_before": "no, try again",
-            "how_after": lambda b: "the cuts are too aggressive — only speed up silences longer than 1 second, leave speech as is.",
-            "target": "Make corrections high-information (a number, a filename, or a behavioral rule).",
-        },
-        "Toolcraft": {
-            "what": "Reach past Bash — use search, planning and delegation for the right jobs.",
-            "how_before": "do it all in the shell",
-            "how_after": lambda b: "use Grep to find the call-sites, then delegate the sweep to a subagent.",
-            "target": "Spread work across the right tools; let background tasks / subagents run end-to-end.",
-        },
-    }
     for name in WEIGHTS:
         score = result["shrunk"][name]
         impact = (TARGET - score) * WEIGHTS[name]
         cards.append({"dim": name, "score": round(score), "impact": impact,
-                      "weak": result["evidence"].get(name, []), "spec": plan_text[name],
+                      "weak": result["evidence"].get(name, []),
                       "detail": result["detail"][name]})
     cards.sort(key=lambda c: c["impact"], reverse=True)
     # strength callout = highest shrunk score
@@ -749,19 +779,14 @@ def _esc(s):
     return html.escape(str(s))
 
 
-# Each archetype's natural next step + why — used to frame the top growth lever as a
-# coherent progression rather than a deficit.
+# Each archetype's encouraging "next gain" — frames the top growth lever as a natural
+# progression for that style rather than a deficit.
 ARCH_PATHS = {
-    "The Orchestrator": ("a more deliberate Orchestrator",
-        "you already route work to the right mechanism — the remaining edge is tightening each brief so fewer runs need a second pass"),
-    "The Director": ("an Orchestrator",
-        "you already hand off whole jobs well — the next gain is a sharper one-line brief and a wider tool range, so more handoffs land first-try and run in parallel"),
-    "The Craftsman": ("an Orchestrator",
-        "your hands-on discipline is excellent — start delegating end-to-end jobs so it scales past what you touch yourself"),
-    "The Explorer": ("a Craftsman",
-        "you understand systems deeply before changing them — carry that into verified changes by running things after you explore"),
-    "The Sprinter": ("a Director",
-        "your velocity is real — add a one-line brief and a quick verify so speed stops costing rework"),
+    "Autonomous Agent": "You already hand off whole jobs well — add one sharp sentence of intent per hand-off and far more will land right the first time, with less back-and-forth.",
+    "Architect": "Your planning is a real strength — pair it with a quick check after each change so your designs ship proven, not just drawn.",
+    "Debugger": "Your diagnostic discipline is excellent — capture each fix as a small reusable rule so the same bug never costs you twice.",
+    "Collaborator": "Your back-and-forth keeps things aligned — front-loading a constraint or two will get you there in fewer rounds.",
+    "Sprinter": "Your speed is real — a one-line brief plus a quick test keeps that speed from turning into rework.",
 }
 
 _SIG_DESC = {
@@ -802,7 +827,7 @@ def build_assessment(corpus, result, cards):
     growth = cards[0]["dim"]
     growth_disp = disp(growth)
     example = _shortest_action_prompt(corpus) or "run it"
-    next_label, path_why = ARCH_PATHS.get(arch, ("an Orchestrator", "keep building the habits below"))
+    path_why = ARCH_PATHS.get(arch, "Keep building the habits below and your next run will show the gain.")
 
     p1 = (f"You drive Claude like <b>{_esc(a['label'])}</b>. {_esc(a['blurb'])} "
           f"The clearest signal is your delegation rate — <b>{deleg}/100</b>, from {n_deleg} hand-offs to "
@@ -814,10 +839,9 @@ def build_assessment(corpus, result, cards):
           f"score lands at <b>{result['overall']}/100 ({_esc(result['band'])})</b>.")
 
     gline = _GROWTH_LINE.get(growth, "").format(s=_esc(short), ex=_esc(example))
-    path_sentence = path_why[0].upper() + path_why[1:]
     p3 = (f"And the apparent tension, resolved: your lowest dimension is <b>{_esc(growth_disp)}</b> — but for "
           f"{art} {_esc(short)} that isn't a contradiction, it's the <i>defining</i> growth edge. {gline} "
-          f"{_esc(path_sentence)}. That's the step from {_esc(short)} to {_esc(next_label)}.")
+          f"{_esc(path_why)}")
 
     return (f'<p class="assess">{p1}</p><p class="assess">{p2}</p><p class="assess">{p3}</p>')
 
@@ -911,27 +935,31 @@ def build_html(corpus, result, cards, strength):
 
     cards_html = ""
     for i, card in enumerate(cards[:2]):
-        spec = card["spec"]
-        before = spec["how_before"]
-        after = spec["how_after"](before)
+        name = card["dim"]
+        t = SKILL_TEACH[name]
+        ex_html = "".join(
+            f'<div class="ba"><div class="before"><span>Instead of</span>“{_esc(e["before"])}”</div>'
+            f'<div class="after"><span>Stronger</span>“{_esc(e["after"])}”</div></div>'
+            for e in t["examples"]
+        )
         cards_html += f"""
       <div class="card prio">
-        <div class="ph">Priority {i+1} · {_esc(disp(card['dim']))} <span class="pscore">now {card['score']}/100</span></div>
-        <h4>{_esc(spec['what'])}</h4>
-        <div class="wwh"><span class="lab">Where it shows up</span>{evidence_html(card)}</div>
-        <div class="wwh"><span class="lab">How to fix it</span>
-          <div class="ba"><div class="before"><span>Instead of</span>“{_esc(before)}”</div>
-          <div class="after"><span>Try</span>“{_esc(after)}”</div></div>
-          <p class="tgt">🎯 {_esc(spec['target'])}</p>
+        <div class="ph">Priority {i+1} · {_esc(disp(name))} <span class="pscore">now {card['score']}/100</span></div>
+        <h4>{_esc(t['what_it_is'])}</h4>
+        <p class="why"><b>Why it matters.</b> {_esc(t['why_it_matters'])}</p>
+        <div class="wwh"><span class="lab">Where this shows up in your sessions</span>{evidence_html(card)}</div>
+        <div class="wwh"><span class="lab">How to grow it</span><p class="how">{_esc(t['how_to_improve'])}</p>
+          {ex_html}
         </div>
+        <p class="tgt">🎯 Try this next session: {_esc(t['practice'])}</p>
       </div>"""
 
-    # strength callout
+    # strength callout — lead with the user's signature (self-driven) strength
     s_det = dim_rate_line(strength)
     strength_html = f"""
       <div class="card keep">
         <div class="ph">Keep doing this · {_esc(disp(strength))} <span class="pscore">{round(result['shrunk'][strength])}/100</span></div>
-        <p>{_esc(DIM_BLURB[strength])} The evidence: {_esc(s_det)}. This is your foundation — build on it.</p>
+        <p>{_esc(SKILL_TEACH[strength]['good_looks_like'])} The evidence in your sessions: {_esc(s_det)}. This is your foundation — build on it.</p>
       </div>"""
 
     # skill map (levels)
@@ -942,9 +970,10 @@ def build_html(corpus, result, cards, strength):
             f'<span class="dot {"on" if i < sk["level"] else ""}"></span>' for i in range(5)
         )
         skill_html += f"""<div class="skill">
-          <div class="sk-top"><span class="sk-name">{_esc(sk['name'])}</span><span class="sk-dots">{dots}</span></div>
-          <p class="sk-now">{_esc(sk['now'])}</p>
-          <p class="sk-next"><b>Next:</b> {_esc(sk['next'])}</p></div>"""
+          <div class="sk-top"><span class="sk-name">{_esc(sk['name'])} <span class="lvl">Level {sk['level']}/5</span></span><span class="sk-dots">{dots}</span></div>
+          <p class="sk-what">{_esc(sk['what'])}</p>
+          <p class="sk-now"><b>You're here:</b> {_esc(sk['now'])}</p>
+          <p class="sk-next"><b>Next move:</b> {_esc(sk['next'])}</p></div>"""
 
     prov_banner = ""
     if provisional:
@@ -1026,7 +1055,11 @@ h3{{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--mut
 .wwh{{margin:12px 0}} .wwh .lab{{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);margin-bottom:6px}}
 ul.ev{{list-style:none}} ul.ev li{{background:var(--p2);border-radius:9px;padding:9px 12px;margin-bottom:7px;font-size:14px}}
 .loc{{color:var(--mut);font-size:12.5px}} .ev-none{{color:var(--good);font-size:14px}}
-.ba{{display:grid;grid-template-columns:1fr 1fr;gap:10px}}
+.ba{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px}}
+.why{{color:var(--mut);font-size:14px;margin:2px 0 4px}} .why b{{color:var(--ink)}}
+.how{{font-size:14.5px;margin:0 0 4px}}
+.sk-what{{color:var(--ink);font-size:13.5px;margin-top:5px}}
+.lvl{{font-size:11px;color:var(--ac2);font-weight:600;margin-left:6px}}
 .before,.after{{border-radius:10px;padding:10px 13px;font-size:14px}}
 .before{{background:rgba(255,107,139,.08);color:#ffd0da}} .after{{background:rgba(58,214,138,.08);color:#cfeede}}
 .before span,.after span{{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.08em;opacity:.7;margin-bottom:3px}}
@@ -1133,7 +1166,7 @@ code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
   <h3>Methodology &amp; honesty</h3>
   <details><summary>How every number was computed (click to expand)</summary>
     <p><b>Only real prompts are scored.</b> A “user” record counts as a prompt only if it is not a tool-result, not a subagent (sidechain) turn, not meta/injected, not a slash-command stub, and not a paste/system-prompt over {MAX_HUMAN_PROMPT_CHARS:,} chars or opening with “You are …”. This removes the contamination that made the old tool report a {d.get('mean_chars','?')}-vs-real average.</p>
-    <p><b>Everything is a rate, then squashed.</b> Each dimension is a per-prompt or per-opportunity rate run through min(1, rate/target), so doing more work never raises the score — only doing it better does. Weights: Direction 24%, Verification 22%, Context 22%, Iteration 18%, Toolcraft 14%.</p>
+    <p><b>Everything is a rate, then squashed.</b> Each dimension is a per-prompt or per-opportunity rate run through min(1, rate/target), so doing more work never raises the score — only doing it better does. Weights: Briefing 24%, Verification 22%, Context-setting 22%, Iteration 18%, Toolcraft 14%.</p>
     <p><b>Thin signals are hedged, not faked.</b> Each dimension is pulled toward a neutral 50 in proportion to how many opportunities it had (e.g. Iteration had only {result['detail']['Iteration']['corrections']} corrections, so it is flagged “low data”). Both raw and confidence-adjusted scores are shown.</p>
     <p><b>Archetype</b> describes your <b>driving style</b>, not the collaboration's quality, so it is built on a separate <b>agency-weighted</b> vector: Briefing, Iteration, Toolcraft and Delegation (handoffs to subagents/background jobs/planning) count fully, while Verification and Context — habits Claude largely does on its own — are discounted ({int(AGENCY['Verification']*100)}% and {int(AGENCY['Context']*100)}% weight). It is the nearest prototype by cosine on z-scored values; if the top two are within {ARCHETYPE_MARGIN} we show a blend. <b>Active time</b> caps idle gaps at {GAP_CAP_SECONDS//60} min. <b>Fixes vs v1:</b> prompt mis-count, length inflation, idle-time over-count, random archetype, uncapped tool-diversity, and keyword “error” false-positives.</p>
     <p><b>Limits:</b> this measures observable behavior, not intent; detectors are heuristic and English-biased; it's a single snapshot, not a trend. Terse prompts that carry intent from the prior turn can under-score Direction.</p>
@@ -1179,7 +1212,8 @@ def _skill_levels(result):
     out = []
     for name, dim, nxt, rub in defs:
         L = lvl(s[dim])
-        out.append({"name": name, "level": L, "now": rub[L],
+        out.append({"name": name, "dim": dim, "level": L, "now": rub[L],
+                    "what": SKILL_TEACH[dim]["what_it_is"],
                     "next": nxt if L < 5 else "maintain this — it's a real strength."})
     return out
 

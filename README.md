@@ -2,22 +2,33 @@
 
 A **private, local, AI-powered** analysis tool for your Claude Code sessions. Understand how you build with AI — without your data ever leaving your machine.
 
-## ⚡ One command (recommended)
+## ⚡ Run it in 5 seconds (zero install)
 
 ```bash
-python3 insight.py
+curl -fsSL https://raw.githubusercontent.com/Feloguarin/claude-insight/main/insight.py | python3 -
 ```
 
-That's it. No install, no pip, no Ollama, no API key, fully offline. It reads
-`~/.claude/projects`, writes a deep, self-contained `ai_fluency_report.html`, and
-opens it in your browser. (Inside Claude Code, run `/ai-fluency`.)
+That's the whole thing. No clone, no pip, no Ollama, no API key, fully offline.
+It reads your local `~/.claude/projects`, writes a deep, kind, self-contained
+`ai_fluency_report.html`, and opens it in your browser.
+
+> Prefer not to pipe curl into python? Two other one-commands:
+> ```bash
+> # clone & run
+> git clone https://github.com/Feloguarin/claude-insight.git && python3 claude-insight/insight.py
+> ```
+> ```text
+> # already inside Claude Code? just type:
+> /ai-fluency
+> ```
+> Requires Python 3.8+ (already on macOS/Linux). Runs read-only; nothing leaves your machine.
 
 ## 🚀 What It Does
 
 Claude Insight (v2, `insight.py`) parses your local Claude Code transcripts and generates:
 
 - **Overall AI Fluency Score (0–100)** — with a calibrated band (Operator → Expert) and what it means
-- **Builder Archetype** — Director, Craftsman, Explorer, Sprinter, or Orchestrator — derived from your scores, not keywords
+- **Builder Archetype** — Architect, Sprinter, Debugger, Collaborator, or Autonomous Agent — chosen from *your* behavior, not keywords
 - **Five Dimensions** — Direction, Verification, Context-setting, Iteration, Toolcraft, each a defensible rate
 - **A Skill Map** — six AI-collaboration skills placed on a 1–5 level rubric, with the next move for each
 - **What / Where / How** — your top growth levers, each with real evidence from your transcripts and a copy-paste prompt rewrite
@@ -189,14 +200,14 @@ claude_insight/
 4. **Product Instinct** — Focus on outcomes vs. process
 5. **Planning** — Research-to-build ratio
 
-### Archetypes (v2 — derived from your scores, not keywords)
-- **🎬 The Director** — hands over whole jobs with a clear brief, steers with sharp corrections
-- **🛠️ The Craftsman** — works close to the code: read first, change precisely, verify every step
-- **🧭 The Explorer** — understands a system before changing it; curiosity-led
-- **⚡ The Sprinter** — fast and direct, many tools, low ceremony; verification is the growth edge
-- **🪄 The Orchestrator** — routes the right work to the right mechanism (subagents, background jobs, planning)
+### Archetypes (chosen from *your* behavior, not keywords)
+- **🤖 Autonomous Agent** — delegates whole, end-to-end jobs and trusts the agent to run them
+- **🏗️ Architect** — plans and explores before building; reads and designs first
+- **🐛 Debugger** — methodical problem-solving: read to diagnose, change, verify, repeat
+- **🤝 Collaborator** — works with the agent like a teammate: asks for options, gives feedback
+- **⚡ Sprinter** — fast and direct, terse prompts, low ceremony; verification is the growth edge
 
-The archetype is the nearest prototype to your five-dimension vector; near-ties are reported as a blend, never a coin-flip.
+The archetype is the nearest match to your **agency-weighted** behavior vector — it counts what *you* do (briefing, correcting, tool choice, delegation) and discounts the read-before-edit and run-the-tests habits Claude does on its own, so it reflects you, not the agent. Near-ties are reported as a blend, never a coin-flip.
 
 ## 🔧 Development
 
