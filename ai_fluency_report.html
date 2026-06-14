@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Your AI Fluency Report</title>
+<style>
+:root{--bg:#0c0d18;--p:#15172a;--p2:#1d2040;--ink:#eef0ff;--mut:#a4a8cc;--line:#2a2d52;
+--ac:#7c5cff;--ac2:#3ad6c9;--good:#3ad68a;--warn:#ffb454;--bad:#ff6b8b;}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:radial-gradient(1100px 640px at 72% -12%,#262a55 0%,var(--bg) 55%);color:var(--ink);
+font:16px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;padding-bottom:80px}
+.wrap{max-width:880px;margin:0 auto;padding:0 22px}
+header{text-align:center;padding:60px 0 12px}
+.kick{letter-spacing:.22em;text-transform:uppercase;font-size:12px;color:var(--mut)}
+h1{font-size:34px;margin:10px 0 4px}
+.sub{color:var(--mut);max-width:620px;margin:6px auto 0;font-size:15px}
+.hero{margin:30px auto 0;display:flex;gap:22px;align-items:stretch;flex-wrap:wrap;justify-content:center}
+.score-card{background:linear-gradient(135deg,var(--p2),var(--p));border:1px solid var(--line);border-radius:22px;
+padding:26px 30px;text-align:center;min-width:240px;box-shadow:0 18px 50px rgba(0,0,0,.4)}
+.ring{position:relative;width:170px;height:170px;margin:0 auto}
+.ring .n{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.ring .n b{font-size:50px;line-height:1}
+.ring .n s{text-decoration:none;color:var(--mut);font-size:13px}
+.band{margin-top:12px;font-size:19px;font-weight:700;color:var(--ac2)}
+.rawnote{color:var(--mut);font-size:12px;margin-top:4px}
+.arch{flex:1;min-width:260px;background:var(--p);border:1px solid var(--line);border-radius:22px;padding:24px 26px;text-align:left}
+.arch .emoji{font-size:40px}
+.arch h2{font-size:23px;margin:6px 0}
+.arch p{color:var(--mut);font-size:15px}
+.prov{background:rgba(255,180,84,.1);border:1px solid rgba(255,180,84,.35);color:#ffe6c2;border-radius:12px;padding:12px 16px;margin:22px 0 0;font-size:14px}
+section{margin:42px 0}
+h3{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--mut);border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:18px}
+.band-meaning{background:var(--p);border:1px solid var(--line);border-left:4px solid var(--ac);border-radius:12px;padding:16px 20px;color:#dfe2ff}
+.ingest{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.ing{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+.ing .n{font-size:24px;font-weight:700;color:var(--ac2)}
+.ing .l{color:var(--mut);font-size:13px;margin-top:2px}
+.honesty{margin-top:16px;background:var(--p);border:1px solid var(--line);border-radius:14px;padding:16px 20px}
+.honesty b{color:var(--ink)}
+.honesty ul{list-style:none;display:flex;flex-wrap:wrap;gap:8px 22px;margin-top:8px}
+.honesty li{color:var(--mut);font-size:14px}
+.dim{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin-bottom:12px}
+.dim .top{display:flex;justify-content:space-between;align-items:baseline}
+.dim .name{font-weight:700;font-size:17px}
+.dim .sval{font-size:22px;font-weight:800} .dim .hint{color:var(--mut);font-size:12px;font-weight:400}
+.bar{height:9px;background:#23264a;border-radius:99px;overflow:hidden;margin:11px 0 9px}
+.bar>i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--ac),var(--ac2))}
+.def{color:var(--ink);font-size:14.5px} .rate{color:var(--mut);font-size:13px;margin-top:3px} .wt{opacity:.7}
+.tag{font-size:10.5px;padding:2px 8px;border-radius:99px;font-weight:700;margin-left:6px;vertical-align:middle}
+.tag.s{background:rgba(58,214,138,.16);color:var(--good)} .tag.w{background:rgba(255,107,139,.16);color:var(--bad)}
+.tag.ld{background:rgba(164,168,204,.16);color:var(--mut)}
+.bar-item{display:flex;align-items:center;gap:12px;margin:7px 0}
+.bl{min-width:160px;font-size:14px} .bt{flex:1;height:7px;background:#23264a;border-radius:99px;overflow:hidden}
+.bt>i{display:block;height:100%;background:linear-gradient(90deg,var(--ac),var(--ac2))} .bv{min-width:46px;text-align:right;color:var(--mut);font-size:13px}
+.card{background:var(--p);border:1px solid var(--line);border-radius:16px;padding:18px 22px;margin-bottom:14px}
+.prio{border-left:4px solid var(--warn)} .keep{border-left:4px solid var(--good)}
+.ph{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--mut)}
+.pscore{float:right;color:var(--ac2);letter-spacing:0}
+.card h4{font-size:18px;margin:8px 0 12px}
+.wwh{margin:12px 0} .wwh .lab{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);margin-bottom:6px}
+ul.ev{list-style:none} ul.ev li{background:var(--p2);border-radius:9px;padding:9px 12px;margin-bottom:7px;font-size:14px}
+.loc{color:var(--mut);font-size:12.5px} .ev-none{color:var(--good);font-size:14px}
+.ba{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.before,.after{border-radius:10px;padding:10px 13px;font-size:14px}
+.before{background:rgba(255,107,139,.08);color:#ffd0da} .after{background:rgba(58,214,138,.08);color:#cfeede}
+.before span,.after span{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.08em;opacity:.7;margin-bottom:3px}
+.tgt{margin-top:10px;color:var(--ac2);font-size:14px}
+.skill{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:14px 18px;margin-bottom:10px}
+.sk-top{display:flex;justify-content:space-between;align-items:center} .sk-name{font-weight:700}
+.dot{display:inline-block;width:11px;height:11px;border-radius:50%;background:#2a2d52;margin-left:4px}
+.dot.on{background:linear-gradient(135deg,var(--ac),var(--ac2))}
+.sk-now{color:var(--mut);font-size:13.5px;margin-top:6px} .sk-next{font-size:13.5px;margin-top:3px}
+.facts{list-style:none} .facts li{background:var(--p);border:1px solid var(--line);border-radius:10px;padding:11px 15px;margin-bottom:8px;font-size:14.5px}
+.facts li::before{content:"›";color:var(--ac2);font-weight:800;margin-right:9px}
+details{background:var(--p);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin-top:14px}
+summary{cursor:pointer;color:var(--mut);font-size:14px} details p,details li{color:var(--mut);font-size:13px;margin-top:8px}
+footer{text-align:center;color:var(--mut);font-size:13px;margin-top:46px}
+code{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}
+@media(max-width:640px){.ba{grid-template-columns:1fr}.bl{min-width:120px}}
+</style></head><body><div class="wrap">
+
+<header>
+  <div class="kick">Claude Insight · AI Fluency Report</div>
+  <h1>How skillfully you build with AI</h1>
+  <p class="sub">A read of how you actually drive Claude Code — measured from your real prompts and Claude's real actions, analyzed entirely on your machine.</p>
+</header>
+
+
+
+<div class="hero">
+  <div class="score-card">
+    <div class="ring">
+      <svg width="170" height="170" style="transform:rotate(-90deg)">
+        <circle cx="85" cy="85" r="74" fill="none" stroke="#23264a" stroke-width="12"/>
+        <circle cx="85" cy="85" r="74" fill="none" stroke="url(#g)" stroke-width="12" stroke-linecap="round"
+          stroke-dasharray="367 999"/>
+        <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#7c5cff"/><stop offset="1" stop-color="#3ad6c9"/></linearGradient></defs>
+      </svg>
+      <div class="n"><b>79</b><s>/ 100</s></div>
+    </div>
+    <div class="band">Advanced</div>
+    <div class="rawnote">raw 83 · confidence-adjusted 79</div>
+  </div>
+  <div class="arch">
+    <div class="emoji">🎬</div>
+    <h2>🎬 The Director</h2>
+    <p>You delegate entire outcomes and trust the agent to run them end-to-end, steering with quick, confident nudges rather than hands-on edits or long briefs.</p>
+    <p style="margin-top:10px;font-size:13px">Closest match +0.60, next is Orchestrator +0.15. Built from how <b>you</b> drive — your briefs, corrections, tool choices and how much you hand off (100/100 delegation) — and it deliberately discounts the read-before-edit and run-the-tests habits Claude does on its own, so it reflects you, not the agent.</p>
+    <p style="margin-top:8px;font-size:12.5px;color:var(--mut)">Your <b>score</b> measures the quality of the collaboration (you + Claude); your <b>archetype</b> measures your driving style alone — so they can differ on purpose.</p>
+  </div>
+</div>
+
+<section>
+  <h3>What your score means</h3>
+  <div class="band-meaning"><b>Advanced (79/100).</b> You orchestrate rather than operate. Prompts encode goals, constraints and acceptance criteria; reading precedes editing as a habit; verification is near-automatic; you use planning and delegation fluently. You brief the agent like a senior teammate.</div>
+</section>
+
+<section>
+  <h3>How much data this is based on</h3>
+  <div class="ingest">
+    <div class="ing"><div class="n">135</div><div class="l">sessions scanned</div></div>
+    <div class="ing"><div class="n">14</div><div class="l">projects</div></div>
+    <div class="ing"><div class="n">49.0 MB</div><div class="l">transcript data parsed</div></div>
+    <div class="ing"><div class="n">31 days</div><div class="l">span of activity</div></div>
+    <div class="ing"><div class="n">152</div><div class="l">real prompts you typed</div></div>
+    <div class="ing"><div class="n">25 h</div><div class="l">hands-on active time</div></div>
+  </div>
+  <div class="honesty">
+    <b>The honest part:</b> we found 3,307 “user” records but only <b>152</b> are prompts <b>you</b> typed. We filtered out 3,155 that the old tool wrongly counted:
+    <ul><li><b>2,997</b> tool results</li><li><b>97</b> subagent turns</li><li><b>34</b> injected / pasted</li><li><b>27</b> meta-injected</li></ul>
+    <p style="color:var(--mut);font-size:13px;margin-top:10px">Your real prompts: median 89 chars · 45% under 80 chars · 25 h hands-on active time (idle gaps over 5 min are excluded — not raw wall-clock). Analyzed 100% on your machine; nothing was uploaded.</p>
+  </div>
+</section>
+
+<section>
+  <h3>The five dimensions</h3>
+  
+      <div class="dim">
+        <div class="top"><span class="name">Verification <span class="tag s">Strength</span></span><span class="sval">100<span class="hint">/100</span></span></div>
+        <div class="bar"><i style="width:100%"></i></div>
+        <p class="def">Whether changes get checked (tests / build / app) before moving on.</p>
+        <p class="rate">68 of 80 edit-bursts verified (85%)<span class="wt"> · weight 22%</span></p>
+      </div>
+      <div class="dim">
+        <div class="top"><span class="name">Context </span><span class="sval">100<span class="hint">/100</span></span></div>
+        <div class="bar"><i style="width:100%"></i></div>
+        <p class="def">Reading a file before editing it — grounded, not blind, changes.</p>
+        <p class="rate">314 of 317 edits were grounded in a prior read (99%)<span class="wt"> · weight 22%</span></p>
+      </div>
+      <div class="dim">
+        <div class="top"><span class="name">Toolcraft </span><span class="sval">84<span class="hint">/100</span></span></div>
+        <div class="bar"><i style="width:84%"></i></div>
+        <p class="def">Using a healthy range of tools — not forcing everything through one.</p>
+        <p class="rate">42 distinct tools, evenness 0.48, 51 delegations<span class="wt"> · weight 14%</span></p>
+      </div>
+      <div class="dim">
+        <div class="top"><span class="name">Iteration <span class="tag ld">low data</span></span><span class="sval">62<span class="hint">/100</span></span></div>
+        <div class="bar"><i style="width:62%"></i></div>
+        <p class="def">Correcting precisely instead of thrashing with vague rejections.</p>
+        <p class="rate">4 correction turns (3% of prompts); 75% were specific<span class="wt"> · weight 18%</span></p>
+      </div>
+      <div class="dim">
+        <div class="top"><span class="name">Direction <span class="tag w">Top growth lever</span></span><span class="sval">48<span class="hint">/100</span></span></div>
+        <div class="bar"><i style="width:48%"></i></div>
+        <p class="def">How clearly you tell the agent what you want before it acts.</p>
+        <p class="rate">11% carry a constraint · 15% name a file/error · 12% state a why<span class="wt"> · weight 24%</span></p>
+      </div>
+</section>
+
+<section>
+  <h3>What to improve — and exactly how</h3>
+  
+      <div class="card prio">
+        <div class="ph">Priority 1 · Direction <span class="pscore">now 48/100</span></div>
+        <h4>Front-load one constraint and the &#x27;why&#x27; before the agent acts.</h4>
+        <div class="wwh"><span class="lab">Where it shows up</span><ul class='ev'><li>“yes make the archetype reflect my behavior not claude&#x27;s so think of how to bake this to the system.” <span class="loc">— AI Muse</span></li><li>“create the folder please” <span class="loc">— AI browser agent bundle</span></li><li>“What happened? And tell me how to fix it.” <span class="loc">— AI browser agent bundle</span></li></ul></div>
+        <div class="wwh"><span class="lab">How to fix it</span>
+          <div class="ba"><div class="before"><span>Instead of</span>“run it”</div>
+          <div class="after"><span>Try</span>“run it — confirm it works before we move on; I need it ready for the demo.”</div></div>
+          <p class="tgt">🎯 Name a goal + one anchor (path / constraint / acceptance test) in ~1 of every 2 action prompts.</p>
+        </div>
+      </div>
+      <div class="card prio">
+        <div class="ph">Priority 2 · Iteration <span class="pscore">now 62/100</span></div>
+        <h4>When correcting, name the symptom AND the exact rule in one line.</h4>
+        <div class="wwh"><span class="lab">Where it shows up</span><ul class='ev'><li>“try again” <span class="loc">— AI platzi executive assistant</span></li></ul></div>
+        <div class="wwh"><span class="lab">How to fix it</span>
+          <div class="ba"><div class="before"><span>Instead of</span>“no, try again”</div>
+          <div class="after"><span>Try</span>“the cuts are too aggressive — only speed up silences longer than 1 second, leave speech as is.”</div></div>
+          <p class="tgt">🎯 Make corrections high-information (a number, a filename, or a behavioral rule).</p>
+        </div>
+      </div>
+  
+      <div class="card keep">
+        <div class="ph">Keep doing this · Verification <span class="pscore">100/100</span></div>
+        <p>Whether changes get checked (tests / build / app) before moving on. The evidence: 68 of 80 edit-bursts verified (85%). This is your foundation — build on it.</p>
+      </div>
+</section>
+
+<section>
+  <h3>Your skill map</h3>
+  <div class="skill">
+          <div class="sk-top"><span class="sk-name">Prompt direction &amp; specificity</span><span class="sk-dots"><span class="dot on"></span><span class="dot on"></span><span class="dot on"></span><span class="dot "></span><span class="dot "></span></span></div>
+          <p class="sk-now">Most prompts carry a goal + one anchor.</p>
+          <p class="sk-next"><b>Next:</b> name a goal + one anchor (path, constraint, or acceptance test) in most action prompts</p></div><div class="skill">
+          <div class="sk-top"><span class="sk-name">Verification discipline</span><span class="sk-dots"><span class="dot on"></span><span class="dot on"></span><span class="dot on"></span><span class="dot on"></span><span class="dot on"></span></span></div>
+          <p class="sk-now">Verification is a reflex — stated up front and layered.</p>
+          <p class="sk-next"><b>Next:</b> maintain this — it&#x27;s a real strength.</p></div><div class="skill">
+          <div class="sk-top"><span class="sk-name">Context grounding (read→edit)</span><span class="sk-dots"><span class="dot on"></span><span class="dot on"></span><span class="dot on"></span><span class="dot on"></span><span class="dot on"></span></span></div>
+          <p class="sk-now">Deliberate exploration before non-trivial changes.</p>
+          <p class="sk-next"><b>Next:</b> maintain this — it&#x27;s a real strength.</p></div><div class="skill">
+          <div class="sk-top"><span class="sk-name">Iteration &amp; recovery</span><span class="sk-dots"><span class="dot on"></span><span class="dot on"></span><span class="dot on"></span><span class="dot on"></span><span class="dot "></span></span></div>
+          <p class="sk-now">Low correction rate, mostly specific.</p>
+          <p class="sk-next"><b>Next:</b> make corrections name a symptom + the exact rule, in one line</p></div><div class="skill">
+          <div class="sk-top"><span class="sk-name">Toolcraft &amp; orchestration</span><span class="sk-dots"><span class="dot on"></span><span class="dot on"></span><span class="dot on"></span><span class="dot on"></span><span class="dot on"></span></span></div>
+          <p class="sk-now">20+ tools used appropriately, low concentration.</p>
+          <p class="sk-next"><b>Next:</b> maintain this — it&#x27;s a real strength.</p></div>
+</section>
+
+<section>
+  <h3>Archetype affinity</h3>
+  <div class="bar-item"><div class="bl">🎬 The Director</div>
+          <div class="bt"><i style="width:80%"></i></div><div class="bv">+0.60</div></div><div class="bar-item"><div class="bl">🪄 The Orchestrator</div>
+          <div class="bt"><i style="width:58%"></i></div><div class="bv">+0.15</div></div><div class="bar-item"><div class="bl">⚡ The Sprinter</div>
+          <div class="bt"><i style="width:48%"></i></div><div class="bv">-0.04</div></div><div class="bar-item"><div class="bl">🛠️ The Craftsman</div>
+          <div class="bt"><i style="width:17%"></i></div><div class="bv">-0.66</div></div><div class="bar-item"><div class="bl">🧭 The Explorer</div>
+          <div class="bt"><i style="width:3%"></i></div><div class="bv">-0.94</div></div>
+</section>
+
+<section>
+  <h3>Honest numbers at a glance</h3>
+  <ul class="facts"><li>152 prompts you actually typed (out of 3,307 user records — the rest were tool output, subagent turns or system text)</li><li>median prompt is 89 characters (16 words); 45% are under 80 chars</li><li>25 hours of hands-on time (idle gaps over 5 min excluded)</li><li>42 distinct tools used; 2,997 tool calls in total</li><li>most-used tool: Bash</li><li>51 delegations (subagents / background jobs / planning)</li></ul>
+</section>
+
+<section>
+  <h3>Methodology &amp; honesty</h3>
+  <details><summary>How every number was computed (click to expand)</summary>
+    <p><b>Only real prompts are scored.</b> A “user” record counts as a prompt only if it is not a tool-result, not a subagent (sidechain) turn, not meta/injected, not a slash-command stub, and not a paste/system-prompt over 6,000 chars or opening with “You are …”. This removes the contamination that made the old tool report a 277-vs-real average.</p>
+    <p><b>Everything is a rate, then squashed.</b> Each dimension is a per-prompt or per-opportunity rate run through min(1, rate/target), so doing more work never raises the score — only doing it better does. Weights: Direction 24%, Verification 22%, Context 22%, Iteration 18%, Toolcraft 14%.</p>
+    <p><b>Thin signals are hedged, not faked.</b> Each dimension is pulled toward a neutral 50 in proportion to how many opportunities it had (e.g. Iteration had only 4 corrections, so it is flagged “low data”). Both raw and confidence-adjusted scores are shown.</p>
+    <p><b>Archetype</b> describes your <b>driving style</b>, not the collaboration's quality, so it is built on a separate <b>agency-weighted</b> vector: Direction, Iteration, Toolcraft and Delegation (handoffs to subagents/background jobs/planning) count fully, while Verification and Context — habits Claude largely does on its own — are discounted (35% and 15% weight). It is the nearest prototype by cosine on z-scored values; if the top two are within 0.06 we show a blend. <b>Active time</b> caps idle gaps at 5 min. <b>Fixes vs v1:</b> prompt mis-count, length inflation, idle-time over-count, random archetype, uncapped tool-diversity, and keyword “error” false-positives.</p>
+    <p><b>Limits:</b> this measures observable behavior, not intent; detectors are heuristic and English-biased; it's a single snapshot, not a trend. Terse prompts that carry intent from the prior turn can under-score Direction.</p>
+  </details>
+</section>
+
+<footer>Generated locally by Claude Insight v2 · your transcripts never left this machine.</footer>
+</div></body></html>

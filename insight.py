@@ -141,18 +141,29 @@ BANDS = [
      "deliberate delegation, and almost no wasted correction cycles."),
 ]
 
-# Archetype prototypes over [Direction, Verification, Context, Iteration, Toolcraft].
+# Archetype axes and prototypes.
+# The archetype describes YOUR DRIVING STYLE, so it is built only from signals you
+# control and DISCOUNTS the habits Claude does on its own. Verification and Context
+# (read-before-edit, running tests) are largely the agent's defaults, so they carry
+# low "agency" weight; how you brief (Direction), correct (Iteration), reach for tools
+# (Toolcraft) and hand off work (Delegation) carry full weight.
+ARCHETYPE_AXES = ["Direction", "Verification", "Context", "Iteration", "Toolcraft", "Delegation"]
+AGENCY = {"Direction": 1.0, "Verification": 0.35, "Context": 0.15,
+          "Iteration": 1.0, "Toolcraft": 0.8, "Delegation": 1.0}
+
+# Prototype vectors over ARCHETYPE_AXES (0-100). Delegation is the axis that separates
+# a hands-off delegator from a hands-on builder.
 PROTOTYPES = {
-    "The Director":      {"emoji": "🎬", "vec": [85, 72, 66, 70, 60],
-        "blurb": "You hand over whole jobs with a clear brief and trust the agent to run them, steering with sharp corrections."},
-    "The Craftsman":     {"emoji": "🛠️", "vec": [66, 90, 90, 75, 50],
-        "blurb": "You work close to the code: read first, change precisely, verify every step. High discipline, hands-on."},
-    "The Explorer":      {"emoji": "🧭", "vec": [70, 46, 88, 60, 56],
-        "blurb": "You understand before you act — read and explore a system first, then change it. Curiosity-led."},
-    "The Sprinter":      {"emoji": "⚡", "vec": [46, 34, 52, 46, 76],
-        "blurb": "Fast and direct: many tools, quick turns, low ceremony. Great velocity; verification is the growth edge."},
-    "The Orchestrator":  {"emoji": "🪄", "vec": [80, 76, 70, 70, 92],
-        "blurb": "You route the right work to the right mechanism — subagents, background jobs, planning — and keep it all moving."},
+    "The Orchestrator":  {"emoji": "🪄", "vec": [76, 72, 68, 68, 92, 96],
+        "blurb": "You hand whole jobs to the right mechanism — subagents, background jobs, planning, a broad tool range — and keep many things moving at once. You direct the work; the agent does the hands-on part."},
+    "The Director":      {"emoji": "🎬", "vec": [56, 60, 60, 66, 64, 92],
+        "blurb": "You delegate entire outcomes and trust the agent to run them end-to-end, steering with quick, confident nudges rather than hands-on edits or long briefs."},
+    "The Craftsman":     {"emoji": "🛠️", "vec": [66, 90, 90, 75, 50, 14],
+        "blurb": "You work close to the code yourself: read first, change precisely, verify every step. High discipline, hands-on, little delegation."},
+    "The Explorer":      {"emoji": "🧭", "vec": [70, 46, 88, 60, 52, 34],
+        "blurb": "You understand before you act — read and explore a system first, then change it. Curiosity-led, mostly hands-on."},
+    "The Sprinter":      {"emoji": "⚡", "vec": [46, 35, 52, 46, 55, 26],
+        "blurb": "Fast and direct: terse prompts, quick turns, low ceremony, mostly hands-on yourself. Great velocity; briefing and verification are the growth edges."},
 }
 ARCHETYPE_MARGIN = 0.06   # cosine-similarity margin below which we emit a blended label
 
@@ -565,29 +576,39 @@ def _cosine(a, b):
     return dot / (na * nb) if na and nb else 0.0
 
 
-def classify_archetype(dim_scores):
-    """Nearest-prototype over z-scored dimension vectors, with a margin guard."""
-    order = ["Direction", "Verification", "Context", "Iteration", "Toolcraft"]
-    V = [dim_scores[d] for d in order]
+def classify_archetype(dim_scores, delegation_score):
+    """Nearest-prototype over your DRIVING-STYLE vector, with a margin guard.
+
+    The vector adds a Delegation axis and is AGENCY-WEIGHTED: axes you control
+    (Direction, Iteration, Toolcraft, Delegation) count fully, while axes the agent
+    mostly drives on its own (Verification, Context) are heavily discounted — so the
+    archetype reflects how *you* drive, not Claude's built-in habits.
+    """
+    scores = dict(dim_scores)
+    scores["Delegation"] = delegation_score
+    V = [scores[ax] for ax in ARCHETYPE_AXES]
     names = list(PROTOTYPES.keys())
     mat = [PROTOTYPES[n]["vec"] for n in names]
-    # z-score each dimension across prototypes + the user vector
+    # z-score each axis across prototypes + the user vector, then apply agency weights
     cols = list(zip(*(mat + [V])))
     means = [statistics.mean(col) for col in cols]
     stds = [statistics.pstdev(col) or 1.0 for col in cols]
+    w = [AGENCY[ax] for ax in ARCHETYPE_AXES]
 
-    def z(vec):
-        return [(v - m) / s for v, m, s in zip(vec, means, stds)]
+    def zw(vec):
+        return [w[i] * (v - means[i]) / stds[i] for i, v in enumerate(vec)]
 
-    vz = z(V)
-    sims = sorted(((round(_cosine(vz, z(PROTOTYPES[n]["vec"])), 3), n) for n in names), reverse=True)
+    vz = zw(V)
+    sims = sorted(((round(_cosine(vz, zw(PROTOTYPES[n]["vec"])), 3), n) for n in names), reverse=True)
     top_sim, top = sims[0]
     second_sim, second = sims[1]
     blended = (top_sim - second_sim) < ARCHETYPE_MARGIN
+    second_short = second.replace("The ", "")
+    article = "an" if second_short[:1] in "AEIOU" else "a"
     return {
         "primary": top, "primary_sim": top_sim, "secondary": second, "secondary_sim": second_sim,
-        "blended": blended, "all": sims,
-        "label": f"{PROTOTYPES[top]['emoji']} {top}" + (f", with a {second} streak" if blended else ""),
+        "blended": blended, "all": sims, "delegation_score": round(delegation_score),
+        "label": f"{PROTOTYPES[top]['emoji']} {top}" + (f", with {article} {second_short} streak" if blended else ""),
         "blurb": PROTOTYPES[top]["blurb"],
     }
 
@@ -611,7 +632,10 @@ def analyze(corpus):
     overall_raw = round(sum(WEIGHTS[n] * raw[n] for n in WEIGHTS))
     overall = round(sum(WEIGHTS[n] * shrunk[n] for n in WEIGHTS))
     band, band_meaning = band_for(overall)
-    archetype = classify_archetype(shrunk)
+    # Delegation is a user-driven archetype axis (handoffs per active hour).
+    active_hours = max(corpus.active_seconds / 3600, 0.5)
+    delegation_score = 100 * squash(corpus.delegation_events / active_hours, 2.0)
+    archetype = classify_archetype(shrunk, delegation_score)
 
     # length distribution of real prompts (context only)
     lens = [len(p["text"]) for p in corpus.real_prompts]
@@ -962,7 +986,8 @@ code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
     <div class="emoji">{PROTOTYPES[a['primary']]['emoji']}</div>
     <h2>{_esc(a['label'])}</h2>
     <p>{_esc(a['blurb'])}</p>
-    <p style="margin-top:10px;font-size:13px">Closest match {a['primary_sim']:+.2f}, next is {_esc(a['secondary'])} {a['secondary_sim']:+.2f}{' — close, so this is a blend' if a['blended'] else ''}. Derived from your five scores, not keywords — so it can never disagree with the numbers.</p>
+    <p style="margin-top:10px;font-size:13px">Closest match {a['primary_sim']:+.2f}, next is {_esc(a['secondary'].replace('The ',''))} {a['secondary_sim']:+.2f}{' — close, so this is a blend' if a['blended'] else ''}. Built from how <b>you</b> drive — your briefs, corrections, tool choices and how much you hand off ({a['delegation_score']}/100 delegation) — and it deliberately discounts the read-before-edit and run-the-tests habits Claude does on its own, so it reflects you, not the agent.</p>
+    <p style="margin-top:8px;font-size:12.5px;color:var(--mut)">Your <b>score</b> measures the quality of the collaboration (you + Claude); your <b>archetype</b> measures your driving style alone — so they can differ on purpose.</p>
   </div>
 </div>
 
@@ -1020,7 +1045,7 @@ code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
     <p><b>Only real prompts are scored.</b> A “user” record counts as a prompt only if it is not a tool-result, not a subagent (sidechain) turn, not meta/injected, not a slash-command stub, and not a paste/system-prompt over {MAX_HUMAN_PROMPT_CHARS:,} chars or opening with “You are …”. This removes the contamination that made the old tool report a {d.get('mean_chars','?')}-vs-real average.</p>
     <p><b>Everything is a rate, then squashed.</b> Each dimension is a per-prompt or per-opportunity rate run through min(1, rate/target), so doing more work never raises the score — only doing it better does. Weights: Direction 24%, Verification 22%, Context 22%, Iteration 18%, Toolcraft 14%.</p>
     <p><b>Thin signals are hedged, not faked.</b> Each dimension is pulled toward a neutral 50 in proportion to how many opportunities it had (e.g. Iteration had only {result['detail']['Iteration']['corrections']} corrections, so it is flagged “low data”). Both raw and confidence-adjusted scores are shown.</p>
-    <p><b>Archetype</b> is the nearest prototype to your five-dimension vector (cosine on z-scored values); if the top two are within {ARCHETYPE_MARGIN} we show a blend. <b>Active time</b> caps idle gaps at {GAP_CAP_SECONDS//60} min. <b>Fixes vs v1:</b> prompt mis-count, length inflation, idle-time over-count, random archetype, uncapped tool-diversity, and keyword “error” false-positives.</p>
+    <p><b>Archetype</b> describes your <b>driving style</b>, not the collaboration's quality, so it is built on a separate <b>agency-weighted</b> vector: Direction, Iteration, Toolcraft and Delegation (handoffs to subagents/background jobs/planning) count fully, while Verification and Context — habits Claude largely does on its own — are discounted ({int(AGENCY['Verification']*100)}% and {int(AGENCY['Context']*100)}% weight). It is the nearest prototype by cosine on z-scored values; if the top two are within {ARCHETYPE_MARGIN} we show a blend. <b>Active time</b> caps idle gaps at {GAP_CAP_SECONDS//60} min. <b>Fixes vs v1:</b> prompt mis-count, length inflation, idle-time over-count, random archetype, uncapped tool-diversity, and keyword “error” false-positives.</p>
     <p><b>Limits:</b> this measures observable behavior, not intent; detectors are heuristic and English-biased; it's a single snapshot, not a trend. Terse prompts that carry intent from the prior turn can under-score Direction.</p>
   </details>
 </section>

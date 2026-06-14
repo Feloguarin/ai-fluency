@@ -206,6 +206,18 @@ class TestEdgeCases(unittest.TestCase):
         self.assertFalse(insight._looks_injected("you're right, fix the login bug in auth.py"))
         self.assertTrue(insight._looks_injected("You are a senior engineer. Your task is ..."))
 
+    def test_archetype_reflects_user_not_claude(self):
+        # A heavy delegator with terse prompts must read as a delegator (Director/
+        # Orchestrator) even when Claude's read-before-edit / verify habits are maxed —
+        # those Claude-driven dimensions are agency-discounted.
+        dims = {"Direction": 48, "Verification": 100, "Context": 100, "Iteration": 62, "Toolcraft": 84}
+        a = insight.classify_archetype(dims, delegation_score=100)
+        self.assertIn(a["primary"], ("The Director", "The Orchestrator"))
+        self.assertNotEqual(a["primary"], "The Craftsman")
+        # the same profile with NO delegation should NOT be a delegator archetype
+        b = insight.classify_archetype(dims, delegation_score=0)
+        self.assertNotIn(b["primary"], ("The Director", "The Orchestrator"))
+
 
 if __name__ == "__main__":
     unittest.main()
