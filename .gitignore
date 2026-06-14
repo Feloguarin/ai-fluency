@@ -12,8 +12,17 @@ dist/
 venv/
 env/
 
-# Generated reports
+# Generated reports — these embed YOUR real prompts & project names; never commit them.
 report.html
+ai_fluency_report.html
+*_report.html
+*fluency*report*.html
+
+# Local transcript archive (your private Claude Code history)
+insight-archive/
+
+# Two-model pipeline working dir (evidence + analysis hold YOUR real prompts)
+.insight/
 
 # Tooling caches
 .pytest_cache/

@@ -1,71 +1,83 @@
 ---
 name: ai-fluency
-description: Analyze how the developer collaborates with Claude Code and produce an "AI fluency" builder profile — archetype, strengths, growth edges, and personalized recommendations. Use when the user asks to analyze their Claude Code usage, AI fluency, builder profile, prompting style, or "how do I use Claude / AI", or runs /ai-fluency.
-argument-hint: "[--dir PATH | --mock]"
-allowed-tools: Bash(python3 *), Read, Write
+description: Analyze how the developer collaborates with Claude Code and produce an "AI fluency" skill map — overall score, archetype, the four AI-fluency competencies (Delegation, Description, Discernment, Diligence), the five measured dimensions, and clear what/where/how direction. Use when the user asks to analyze their Claude Code usage, AI fluency, builder profile, prompting style, or "how do I use Claude / AI", or runs /ai-fluency.
+argument-hint: "[PATH | --no-open]"
+allowed-tools: Bash(python3 *), Read, Write, Workflow
 ---
 
-# AI Fluency Analysis
+# AI Fluency Analysis — one command, two-model depth
 
-You are profiling how this developer collaborates with AI coding tools, using
-their real Claude Code session transcripts. Claude Insight computes the
-**numbers** deterministically; **you** provide the qualitative judgement.
+You produce a reliable AI-fluency **skill map** for this developer from their real
+Claude Code transcripts. The pipeline has three parts, all local:
 
-## Step 1 — Collect the data
+1. **Measure (deterministic).** `insight.py` parses transcripts, de-contaminates
+   them, and computes the numbers — rate-based, confidence-hedged, archive-backed
+   so it sees **more than Claude Code's 30-day window**.
+2. **Explore (Sonnet 4.6).** Parallel explorers read the evidence, one per AI-fluency
+   competency.
+3. **Analyze (Opus 4.8).** A senior assessor writes the skill map, **grounded in the
+   bundled AI Fluency framework**, then verifies it is evidence-grounded.
 
-Run the collector. It prints JSON with aggregate `metrics` and a `sample_prompts`
-array (the developer's actual prompts). Pass through any argument the user gave
-(e.g. `--dir ~/.claude/projects`, or `--mock` to demo with fake data):
+## Step 1 — Measure + emit evidence (one command)
 
-```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/collect.py $ARGUMENTS
-```
-
-If it prints an error about no transcripts found, tell the user to point at
-their transcript directory with `--dir PATH` (default search paths are
-`~/.claude/projects` and `~/.claude/sessions`), or try `--mock` for a demo.
-
-## Step 2 — Analyze
-
-Read the JSON. Ground every claim in the data — cite specific numbers from
-`metrics` and quote or paraphrase real prompts from `sample_prompts`. Treat the
-heuristic `archetype` and `archetype_scores` as hints, not gospel: form your own
-judgement from the prompts.
-
-Determine, in order:
-
-1. **Builder archetype** — pick exactly one and justify it from the prompts:
-   - 🏗️ **Architect** — plans/designs before building
-   - ⚡ **Sprinter** — high velocity, direct action, rapid iteration
-   - 🐛 **Debugger** — methodical problem-solving and error-hunting
-   - 🤝 **Collaborator** — seeks alignment, asks for opinions/reviews
-   - 🤖 **Autonomous Agent** — delegates end-to-end workflows
-2. **The five dimensions** (`steering`, `execution`, `engineering`, `product`,
-   `planning` in `metrics`) — interpret each score in plain language; note the
-   standout strength and the weakest dimension.
-3. **AI fluency read** — how effectively do they steer the model? Look at prompt
-   length/specificity, whether prompts include file paths and concrete
-   constraints, how they iterate, and tool diversity.
-4. **3 specific, actionable recommendations** — tied to what you actually saw in
-   their prompts, not generic advice. Each should name the behavior to change
-   and what to do instead.
-
-## Step 3 — Present
-
-Give a concise profile: archetype (with one-line reasoning), a 2–3 sentence
-summary, the dimension read, and the 3 recommendations. Lead with the headline
-(their archetype and the single most useful thing to improve).
-
-If the user wants a shareable artifact, offer to generate the HTML report:
+From the repo root (pure standard library — no install, no API key, fully offline):
 
 ```bash
-python3 -m claude_insight $ARGUMENTS --no-ai --report report.html
+python3 insight.py --evidence .insight/evidence.json --no-open -o ai_fluency_report.html $ARGUMENTS
 ```
+
+This writes a deterministic report and `.insight/evidence.json` (de-contaminated,
+local, git-ignored). If it reports no transcripts, tell the user to pass their
+transcript directory as `$ARGUMENTS` (default `~/.claude/projects`).
+
+## Step 2 — Run the two-model analysis workflow
+
+Resolve absolute paths first, then invoke the bundled workflow:
+
+```bash
+python3 -c "import os;print(os.path.abspath('.insight/evidence.json'));print(os.path.abspath('reference/ai-fluency-framework.md'))"
+```
+
+Then call the **Workflow** tool with:
+- `name`: `ai-fluency`
+- `args`: `{ "evidence": "<abs evidence path>", "framework": "<abs framework path>" }`
+
+The workflow returns the analysis as a JSON object (overall_read, skill_map of the
+four competencies, top_growth, strengths). It uses **Sonnet 4.6** for exploration and
+**Opus 4.8** for analysis + verification — model selection is baked into the workflow.
+
+## Step 3 — Render the final report
+
+Write the workflow's returned JSON to `.insight/analysis.json`, then merge it into
+the report:
+
+```bash
+python3 insight.py --analysis .insight/analysis.json --no-open -o ai_fluency_report.html $ARGUMENTS
+```
+
+The report now carries the Opus-authored, framework-grounded skill map on top of the
+deterministic numbers. Point the user to `ai_fluency_report.html`.
+
+## Step 4 — Narrate (don't re-derive)
+
+In chat, give a short, encouraging read: the **overall score + band + archetype** in
+one sentence, the **single highest-leverage growth move** grounded in one of their
+real prompts, and their **strongest competency** as the foundation. Keep it to a
+paragraph or two; the report has the depth.
+
+## Fallbacks
+
+- **No Workflow capability available?** Steps 1 + a plain narration still work — the
+  deterministic report is complete on its own. Skip steps 2–3.
+- **Explicit path given?** Pass it as `$ARGUMENTS` in steps 1 and 3 (archiving is
+  skipped for explicit paths by design).
 
 ## Notes
 
-- All of this runs locally. Transcripts are read on this machine and analyzed by
-  you (Claude Code) — nothing is uploaded and no API key is involved.
-- The standalone tool also has an offline mode that uses a local Ollama model
-  instead of you; this skill is the path for when the user is already in Claude
-  Code. See the repo README.
+- Everything runs locally; original transcripts are never modified. Transcripts are
+  analyzed on this machine and copied into a local archive (`~/.claude/insight-archive`)
+  so history outlives Claude Code's 30-day cleanup. Nothing is uploaded.
+- **Nothing personal is committed:** the report, `.insight/`, and the archive are all
+  git-ignored. Only code + the framework reference live in the repo.
+- Scores measure observable behavior, not intent; thin signals are flagged "low data"
+  and hedged — don't over-claim on those.

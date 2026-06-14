@@ -2,50 +2,69 @@
 
 A **private, local, AI-powered** analysis tool for your Claude Code sessions. Understand how you build with AI — without your data ever leaving your machine.
 
+## ⚡ Run it in 5 seconds (zero install)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Feloguarin/claude-insight/main/insight.py | python3 -
+```
+
+That's the whole thing. No clone, no pip, no Ollama, no API key, fully offline.
+It reads your local `~/.claude/projects`, writes a deep, kind, self-contained
+`ai_fluency_report.html`, and opens it in your browser.
+
+> Prefer not to pipe curl into python? Two other one-commands:
+> ```bash
+> # clone & run
+> git clone https://github.com/Feloguarin/claude-insight.git && python3 claude-insight/insight.py
+> ```
+> ```text
+> # already inside Claude Code? just type:
+> /ai-fluency
+> ```
+> Requires Python 3.8+ (already on macOS/Linux). Never modifies your original transcripts; nothing leaves your machine.
+
 ## 🚀 What It Does
 
-Claude Insight parses your local Claude Code transcript files and generates:
+Claude Insight parses your local Claude Code transcripts and generates:
 
-- **Builder Archetype** — Are you an Architect, Sprinter, Debugger, Collaborator, or Autonomous Agent?
-- **Efficiency Score** — How effectively you steer AI coding tools
-- **Prompt Quality Analysis** — Specificity, context, iteration patterns
-- **Session Insights** — Duration, token usage, tool utilization
-- **Growth Recommendations** — Concrete improvements based on your patterns
+- **Overall AI Fluency Score (0–100)** — with a calibrated band (Operator → Expert) and what it means
+- **Builder Archetype** — Architect, Sprinter, Debugger, Collaborator, or Autonomous Agent — chosen from *your* behavior, not keywords
+- **A 4-competency skill map** — **Delegation · Description · Discernment · Diligence** (the AI Fluency framework), each placed on a 1–5 level rubric with your next move
+- **Five measured dimensions** — Direction, Verification, Context-setting, Iteration, Toolcraft, each a defensible rate
+- **What / Where / How** — your top growth levers, each with real evidence from your transcripts and a copy-paste prompt rewrite
+- **Full data-ingested transparency** — how many real prompts (vs. tool-output/subagent/injected noise), projects, MB, and active time it's based on — across **more than the 30 days Claude Code keeps on disk** (see below)
+
+> **Accuracy first.** Every score is a *rate* over your **real, de-contaminated prompts** pushed through a saturating curve — so using Claude *more* can never raise your score, only using it *better* can. Tool-results, subagent turns, slash-command stubs, injected system text and pasted walls of text are filtered out before anything is scored, and idle time is excluded from "active hours." Thin signals are flagged "low data" and hedged toward neutral instead of faking confidence.
+
+## Two ways to run it
+
+| Path | Command | What you get |
+| --- | --- | --- |
+| **Deterministic** (everyone) | `python3 insight.py` | The full numeric report, archetype, skill map, growth levers — zero install, zero AI, fully offline. |
+| **Deep two-model analysis** (in Claude Code) | `/ai-fluency` | Everything above **plus** a skill map written by a two-model pipeline: **Sonnet 4.6 explores** your evidence, **Opus 4.8 analyzes** it against the bundled AI Fluency framework and verifies the result is evidence-grounded. |
+
+The numbers are always computed deterministically; the models add judgement and
+direction on top — and never change the math.
+
+### 🧠 The deep analysis pipeline (`/ai-fluency`)
+
+One command inside Claude Code runs three local stages:
+
+1. **Measure** — `insight.py` writes the report + a de-contaminated evidence bundle.
+2. **Explore (Sonnet 4.6)** — four parallel explorers, one per AI-fluency competency.
+3. **Analyze (Opus 4.8)** — a senior assessor writes the skill map grounded in
+   [`reference/ai-fluency-framework.md`](reference/ai-fluency-framework.md), then a
+   verifier checks every claim is grounded in your evidence and repairs it if not.
+
+It uses your existing Claude Code session — **no separate API key**. Model choice is
+baked into the workflow ([`.claude/workflows/ai-fluency.js`](.claude/workflows/ai-fluency.js)).
 
 ## 🔒 Privacy First
 
-- **100% local** — No cloud calls, no uploads, no telemetry
-- **Read-only** — Never modifies your Claude Code files
-- **No API keys required** — Even the AI analysis runs on your own machine
+- **100% local** — no cloud calls, no uploads, no telemetry; the models run inside your own Claude Code session
+- **Never modifies your transcripts** — the only things written are the report and a local archive copy of your history
+- **Nothing personal in the repo** — the report, the evidence (`.insight/`) and the archive are git-ignored; only code + the framework reference are tracked
 - **Open source** — MIT license, auditable
-
-## 🤖 Local AI Analysis
-
-The qualitative parts of your profile — archetype, written summary, and
-personalized recommendations — are generated by a **small AI model that runs
-entirely on your machine** via [Ollama](https://ollama.com). Your transcripts
-never leave your computer and no API key is involved.
-
-```bash
-# 1. Install Ollama (https://ollama.com/download)
-# 2. Pull the default model (~3GB, runs comfortably in 8GB RAM)
-ollama pull gemma3:4b
-```
-
-If Ollama isn't installed or running, Claude Insight automatically falls back
-to fast, deterministic heuristic analysis — so it always works offline. Use a
-different local model with `--model` (e.g. `--model llama3.2:3b`) or skip the
-AI entirely with `--no-ai`. The numeric metrics are always computed
-deterministically; the model only provides judgement and prose.
-
-### Two ways to get AI analysis
-
-| You're using…        | How analysis runs                                             |
-| -------------------- | ------------------------------------------------------------- |
-| **Claude Code**      | The `/ai-fluency` **skill** — Claude Code itself does the analysis (no extra model) |
-| **The standalone CLI** | A local Ollama model (default `gemma3:4b`), or heuristics as fallback |
-
-Both keep everything on your machine.
 
 ## 🧩 Use it as a Claude Code skill
 
@@ -54,28 +73,58 @@ Claude Code, just run:
 
 ```
 /ai-fluency
-/ai-fluency --dir ~/.claude/projects
-/ai-fluency --mock
 ```
 
-The skill runs the deterministic data engine (`claude-insight --json`) and then
-**Claude Code performs the qualitative AI-fluency analysis itself** — archetype,
-strengths, growth edges, and personalized recommendations grounded in your
-actual prompts. No separate model, no API key, no Ollama required. The skill is
-also auto-discovered when you ask Claude Code to "analyze my AI fluency" or
-"profile how I use Claude Code".
+The skill runs the three-stage pipeline (measure → Sonnet explore → Opus analyze),
+writes the full HTML report with the framework-grounded skill map, and then gives you
+a short plain-English read on top of it. It's also auto-discovered when you ask Claude
+Code to "analyze my AI fluency" or "profile how I use Claude Code". If the Workflow
+capability isn't available, it falls back to the deterministic report — still complete.
 
-### Data export
-
-The JSON the skill consumes is available directly:
+### Data export & flags
 
 ```bash
-claude-insight --json --dir ~/.claude/projects   # metrics + sample prompts, to stdout
+python3 insight.py --json                 # metrics + data-ingested breakdown as JSON
+python3 insight.py --evidence ev.json     # write the de-contaminated evidence bundle (pipeline input)
+python3 insight.py --analysis an.json     # merge an Opus-stage analysis into the report's skill map
+python3 insight.py /path/to/transcripts   # analyze a specific directory
+python3 insight.py --no-open              # don't auto-open the browser
+python3 insight.py --archive ~/Dropbox/claude-archive   # keep history in a synced folder
+python3 insight.py --no-archive          # analyze without copying anything new
 ```
 
-## 📦 Installation
+## ⏳ Analyzing more than 30 days
 
-### One-liner (recommended)
+By default Claude Code **deletes transcripts older than its `cleanupPeriodDays`
+setting (default `30`)**, so only ~30 days of history is ever on disk — that's a
+limit of the *data*, not of this tool, which reads everything available.
+
+Two things make Claude Insight see more:
+
+1. **Stop the deletion.** Add this to `~/.claude/settings.json` so Claude Code
+   keeps a full year (set it before more data ages out):
+   ```json
+   { "cleanupPeriodDays": 365 }
+   ```
+2. **The built-in archive (automatic).** On every run, Claude Insight copies your
+   transcripts into a persistent archive (`~/.claude/insight-archive` by default)
+   *before* the cleanup can remove them, then analyzes **live + archive** deduped.
+   So from your first run onward your history **accumulates indefinitely**, even
+   past 30 days. It only ever grows files, copies atomically, and stays 100% on
+   your machine. Point it anywhere durable:
+   ```bash
+   python3 insight.py --archive ~/Dropbox/claude-archive   # survives reinstalls / new machines
+   # or set CLAUDE_INSIGHT_ARCHIVE in your shell. Use --no-archive to skip a run.
+   ```
+
+## 📦 Installation (legacy package — optional)
+
+> You don't need this for the recommended path. `python3 insight.py` runs
+> standalone with zero install. The steps below install the older
+> `claude-insight` package/CLI (which also offers an offline local-Ollama mode).
+> The v2 single-file engine is the most accurate entry point.
+
+### One-liner
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Feloguarin/claude-insight/main/install.sh | bash
 ```
@@ -131,54 +180,56 @@ claude-insight --no-ai               # heuristic analysis only (no model needed)
 ## 📊 Example Output
 
 ```
-╔══════════════════════════════════════════╗
-║     Your AI Builder Profile              ║
-╠══════════════════════════════════════════╣
-║  Archetype: 🏗️  Architect               ║
-║  Efficiency Score: 78/100                ║
-║  Sessions Analyzed: 42                   ║
-║  Total Prompts: 1,247                  ║
-║  Avg Prompt Length: 312 chars            ║
-║  Top Tools: Read(45%), Edit(30%), Bash(15%) ║
-╚══════════════════════════════════════════╝
-
-🎯 Growth Edge:
-   → Your planning prompts are strong, but try adding
-     specific file paths to reduce ambiguity
-   → Consider using more multi-step tool sequences
+  AI Fluency Score: 78/100  (Advanced)
+  Archetype: 🤖 Autonomous Agent
+  Based on 156 real prompts across 16 projects, 156 sessions (53.8 MB).
+  Archive: 156 sessions preserved at ~/.claude/insight-archive (0 new, 1 updated this run).
+  Report: ai_fluency_report.html
 ```
+
+The HTML report adds the headline ring, the four-competency skill map (with your
+level and next move for each), the five dimensions, your top growth levers with
+before/after prompt rewrites, archetype affinity, and a full methodology appendix.
 
 ## 🏗️ Architecture
 
 ```
-claude_insight/
-├── parser/          # JSONL transcript parsing
-├── analyzer/
-│   ├── metrics.py   # Deterministic metric computation & scoring
-│   └── llm.py       # Local LLM analysis via Ollama (archetype, summary, tips)
-├── reports/         # HTML & terminal report generation
-└── cli.py           # Command-line interface (incl. --json export)
+insight.py                       # the whole engine: parse → de-contaminate → score → report
+                                 #   (pure stdlib, zero install; --evidence / --analysis hooks)
+reference/
+└── ai-fluency-framework.md      # the 4D framework the Opus analysis stage is grounded in
+.claude/
+├── skills/ai-fluency/SKILL.md   # /ai-fluency — orchestrates the one-command pipeline
+└── workflows/ai-fluency.js      # Sonnet 4.6 explore → Opus 4.8 analyze → verify
+tests/                           # stdlib unittest (de-contamination, scoring, archive, …)
 
-.claude/skills/ai-fluency/   # Claude Code skill: Claude Code does the analysis
-├── SKILL.md
-└── scripts/collect.py       # Emits metrics + sample prompts as JSON
+claude_insight/                  # legacy package (optional; older Ollama-based CLI)
 ```
 
 ## 📈 Metrics Computed
 
-### 5 Dimensions of Building
-1. **Steering** — How well you direct AI tools
-2. **Execution** — Speed and iteration efficiency
-3. **Engineering** — Code quality and systematic approach
-4. **Product Instinct** — Focus on outcomes vs. process
-5. **Planning** — Research-to-build ratio
+### The four AI-fluency competencies (skill map)
+Adapted from Anthropic's *AI Fluency: Frameworks & Foundations* (the 4 Ds):
+1. **Delegation** — deciding what to hand to the agent, and how to split the work
+2. **Description** — telling the agent what you want (goal + constraint + acceptance test)
+3. **Discernment** — evaluating what comes back (verify, ground edits, correct precisely)
+4. **Diligence** — being responsible: verify before it ships, tear down, own the result
 
-### Archetypes
-- **🏗️ Architect** — Plans extensively, low code churn
-- **⚡ Sprinter** — High velocity, rapid iteration
-- **🐛 Debugger** — Methodical problem-solving
-- **🤝 Collaborator** — Seeks alignment, asks questions
-- **🤖 Autonomous Agent** — Delegates end-to-end workflows
+### Five measured dimensions (the signals behind the map)
+1. **Direction / Briefing** — how concretely you frame requests (constraint / artifact / intent rates)
+2. **Verification** — running tests / build / app after edit-bursts
+3. **Context-setting** — grounding edits in a prior read (not blind edits)
+4. **Iteration** — correcting precisely instead of vague rejection
+5. **Toolcraft** — reaching for a healthy range of tools, not forcing one
+
+### Archetypes (chosen from *your* behavior, not keywords)
+- **🤖 Autonomous Agent** — delegates whole, end-to-end jobs and trusts the agent to run them
+- **🏗️ Architect** — plans and explores before building; reads and designs first
+- **🐛 Debugger** — methodical problem-solving: read to diagnose, change, verify, repeat
+- **🤝 Collaborator** — works with the agent like a teammate: asks for options, gives feedback
+- **⚡ Sprinter** — fast and direct, terse prompts, low ceremony; verification is the growth edge
+
+The archetype is the nearest match to your **agency-weighted** behavior vector — it counts what *you* do (briefing, correcting, tool choice, delegation) and discounts the read-before-edit and run-the-tests habits Claude does on its own, so it reflects you, not the agent. Near-ties are reported as a blend, never a coin-flip.
 
 ## 🔧 Development
 
