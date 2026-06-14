@@ -122,6 +122,15 @@ WEIGHTS = {
 # Opportunity-count targets for per-dimension confidence shrinkage.
 TARGET_N = {"Direction": 60, "Verification": 15, "Context": 25, "Iteration": 12, "Toolcraft": 40}
 
+# User-facing labels. "Direction" is shown as "Briefing" so it never collides with the
+# "Director" archetype (the dimension measures how well you brief; the archetype, that
+# you delegate — different things).
+DISPLAY_NAMES = {"Direction": "Briefing", "Verification": "Verification",
+                 "Context": "Context-setting", "Iteration": "Iteration", "Toolcraft": "Toolcraft"}
+
+def disp(name):
+    return DISPLAY_NAMES.get(name, name)
+
 BANDS = [
     ("Operator", 0, 39, "You use the agent as fast hands. Prompts are short and underspecified, "
      "edits often happen without reading the file first, and changes are rarely verified. The "
@@ -740,6 +749,79 @@ def _esc(s):
     return html.escape(str(s))
 
 
+# Each archetype's natural next step + why — used to frame the top growth lever as a
+# coherent progression rather than a deficit.
+ARCH_PATHS = {
+    "The Orchestrator": ("a more deliberate Orchestrator",
+        "you already route work to the right mechanism — the remaining edge is tightening each brief so fewer runs need a second pass"),
+    "The Director": ("an Orchestrator",
+        "you already hand off whole jobs well — the next gain is a sharper one-line brief and a wider tool range, so more handoffs land first-try and run in parallel"),
+    "The Craftsman": ("an Orchestrator",
+        "your hands-on discipline is excellent — start delegating end-to-end jobs so it scales past what you touch yourself"),
+    "The Explorer": ("a Craftsman",
+        "you understand systems deeply before changing them — carry that into verified changes by running things after you explore"),
+    "The Sprinter": ("a Director",
+        "your velocity is real — add a one-line brief and a quick verify so speed stops costing rework"),
+}
+
+_SIG_DESC = {
+    "Delegation": "how much you hand off — you give Claude whole jobs and trust it to run them end-to-end",
+    "Toolcraft": "the range of tools you bring to bear — you reach past the shell for the right instrument",
+    "Iteration": "how cleanly you change course — your corrections tend to name the fix, not just reject",
+    "Briefing": "how concretely you frame requests when it matters",
+}
+
+# The specific, evidence-grounded line that explains each dimension as a growth edge.
+_GROWTH_LINE = {
+    "Direction": "{s}s win on how sharply they frame the work they hand off — and right now yours are often one-liners like “{ex}”, so Claude fills gaps you could have decided.",
+    "Verification": "Right now changes often move on without a test, build or run to confirm them — the cheapest reliability you can buy back.",
+    "Context": "Right now some edits land before the file has been read that session — an easy blind-edit risk to remove.",
+    "Iteration": "Right now corrections lean toward brief rejections; naming the symptom and the exact rule resolves loops in fewer turns.",
+    "Toolcraft": "Right now most work funnels through one tool — reaching for search, planning and delegation widens what you can take on.",
+}
+
+
+def build_assessment(corpus, result, cards):
+    """A coherent, professional written read — synthesizes the numbers into one story
+    and explicitly resolves the archetype-vs-weakest-dimension tension."""
+    a = result["archetype"]
+    arch = a["primary"]
+    short = arch.replace("The ", "")
+    art = "an" if short[:1] in "AEIOU" else "a"
+    deleg = a["delegation_score"]
+    n_deleg = corpus.delegation_events
+    median = result["dist"].get("median_chars", "?")
+
+    # signature strength = your strongest USER-driven signal (not Claude's defaults)
+    user_signals = {
+        "Briefing": result["shrunk"]["Direction"], "Iteration": result["shrunk"]["Iteration"],
+        "Toolcraft": result["shrunk"]["Toolcraft"], "Delegation": float(deleg),
+    }
+    sig = max(user_signals, key=user_signals.get)
+
+    growth = cards[0]["dim"]
+    growth_disp = disp(growth)
+    example = _shortest_action_prompt(corpus) or "run it"
+    next_label, path_why = ARCH_PATHS.get(arch, ("an Orchestrator", "keep building the habits below"))
+
+    p1 = (f"You drive Claude like <b>{_esc(a['label'])}</b>. {_esc(a['blurb'])} "
+          f"The clearest signal is your delegation rate — <b>{deleg}/100</b>, from {n_deleg} hand-offs to "
+          f"subagents, background jobs and planning — paired with fast, terse prompts (median "
+          f"{median} characters).")
+
+    p2 = (f"Your strongest <i>self-driven</i> habit is {_esc(_SIG_DESC.get(sig, sig.lower()))}. "
+          f"That, plus the disciplined read→edit→verify loop your sessions show, is why your overall "
+          f"score lands at <b>{result['overall']}/100 ({_esc(result['band'])})</b>.")
+
+    gline = _GROWTH_LINE.get(growth, "").format(s=_esc(short), ex=_esc(example))
+    path_sentence = path_why[0].upper() + path_why[1:]
+    p3 = (f"And the apparent tension, resolved: your lowest dimension is <b>{_esc(growth_disp)}</b> — but for "
+          f"{art} {_esc(short)} that isn't a contradiction, it's the <i>defining</i> growth edge. {gline} "
+          f"{_esc(path_sentence)}. That's the step from {_esc(short)} to {_esc(next_label)}.")
+
+    return (f'<p class="assess">{p1}</p><p class="assess">{p2}</p><p class="assess">{p3}</p>')
+
+
 def build_html(corpus, result, cards, strength):
     a = result["archetype"]
     d = result["dist"]
@@ -787,7 +869,7 @@ def build_html(corpus, result, cards, strength):
         ld = '<span class="tag ld">low data</span>' if lowdata else ""
         dim_html += f"""
       <div class="dim">
-        <div class="top"><span class="name">{_esc(name)} {tag}{ld}</span><span class="sval">{sc}<span class="hint">/100</span></span></div>
+        <div class="top"><span class="name">{_esc(disp(name))} {tag}{ld}</span><span class="sval">{sc}<span class="hint">/100</span></span></div>
         <div class="bar"><i style="width:{sc}%"></i></div>
         <p class="def">{_esc(DIM_BLURB[name])}</p>
         <p class="rate">{_esc(dim_rate_line(name))}<span class="wt"> · weight {int(WEIGHTS[name]*100)}%</span></p>
@@ -834,7 +916,7 @@ def build_html(corpus, result, cards, strength):
         after = spec["how_after"](before)
         cards_html += f"""
       <div class="card prio">
-        <div class="ph">Priority {i+1} · {_esc(card['dim'])} <span class="pscore">now {card['score']}/100</span></div>
+        <div class="ph">Priority {i+1} · {_esc(disp(card['dim']))} <span class="pscore">now {card['score']}/100</span></div>
         <h4>{_esc(spec['what'])}</h4>
         <div class="wwh"><span class="lab">Where it shows up</span>{evidence_html(card)}</div>
         <div class="wwh"><span class="lab">How to fix it</span>
@@ -848,7 +930,7 @@ def build_html(corpus, result, cards, strength):
     s_det = dim_rate_line(strength)
     strength_html = f"""
       <div class="card keep">
-        <div class="ph">Keep doing this · {_esc(strength)} <span class="pscore">{round(result['shrunk'][strength])}/100</span></div>
+        <div class="ph">Keep doing this · {_esc(disp(strength))} <span class="pscore">{round(result['shrunk'][strength])}/100</span></div>
         <p>{_esc(DIM_BLURB[strength])} The evidence: {_esc(s_det)}. This is your foundation — build on it.</p>
       </div>"""
 
@@ -879,6 +961,7 @@ def build_html(corpus, result, cards, strength):
         f"{corpus.delegation_events} delegations (subagents / background jobs / planning)",
     ]
     facts_html = "".join(f"<li>{_esc(f)}</li>" for f in facts)
+    assessment_html = build_assessment(corpus, result, cards)
 
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
@@ -912,6 +995,8 @@ padding:26px 30px;text-align:center;min-width:240px;box-shadow:0 18px 50px rgba(
 section{{margin:42px 0}}
 h3{{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--mut);border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:18px}}
 .band-meaning{{background:var(--p);border:1px solid var(--line);border-left:4px solid var(--ac);border-radius:12px;padding:16px 20px;color:#dfe2ff}}
+.assess{{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin-bottom:12px;font-size:15.5px;line-height:1.7;color:#e8eaff}}
+.assess b{{color:#fff}}
 .ingest{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}}
 .ing{{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:14px 16px}}
 .ing .n{{font-size:24px;font-weight:700;color:var(--ac2)}}
@@ -992,6 +1077,11 @@ code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
 </div>
 
 <section>
+  <h3>Professional assessment</h3>
+  {assessment_html}
+</section>
+
+<section>
   <h3>What your score means</h3>
   <div class="band-meaning"><b>{_esc(result['band'])} ({result['overall']}/100).</b> {_esc(result['band_meaning'])}</div>
 </section>
@@ -1045,7 +1135,7 @@ code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
     <p><b>Only real prompts are scored.</b> A “user” record counts as a prompt only if it is not a tool-result, not a subagent (sidechain) turn, not meta/injected, not a slash-command stub, and not a paste/system-prompt over {MAX_HUMAN_PROMPT_CHARS:,} chars or opening with “You are …”. This removes the contamination that made the old tool report a {d.get('mean_chars','?')}-vs-real average.</p>
     <p><b>Everything is a rate, then squashed.</b> Each dimension is a per-prompt or per-opportunity rate run through min(1, rate/target), so doing more work never raises the score — only doing it better does. Weights: Direction 24%, Verification 22%, Context 22%, Iteration 18%, Toolcraft 14%.</p>
     <p><b>Thin signals are hedged, not faked.</b> Each dimension is pulled toward a neutral 50 in proportion to how many opportunities it had (e.g. Iteration had only {result['detail']['Iteration']['corrections']} corrections, so it is flagged “low data”). Both raw and confidence-adjusted scores are shown.</p>
-    <p><b>Archetype</b> describes your <b>driving style</b>, not the collaboration's quality, so it is built on a separate <b>agency-weighted</b> vector: Direction, Iteration, Toolcraft and Delegation (handoffs to subagents/background jobs/planning) count fully, while Verification and Context — habits Claude largely does on its own — are discounted ({int(AGENCY['Verification']*100)}% and {int(AGENCY['Context']*100)}% weight). It is the nearest prototype by cosine on z-scored values; if the top two are within {ARCHETYPE_MARGIN} we show a blend. <b>Active time</b> caps idle gaps at {GAP_CAP_SECONDS//60} min. <b>Fixes vs v1:</b> prompt mis-count, length inflation, idle-time over-count, random archetype, uncapped tool-diversity, and keyword “error” false-positives.</p>
+    <p><b>Archetype</b> describes your <b>driving style</b>, not the collaboration's quality, so it is built on a separate <b>agency-weighted</b> vector: Briefing, Iteration, Toolcraft and Delegation (handoffs to subagents/background jobs/planning) count fully, while Verification and Context — habits Claude largely does on its own — are discounted ({int(AGENCY['Verification']*100)}% and {int(AGENCY['Context']*100)}% weight). It is the nearest prototype by cosine on z-scored values; if the top two are within {ARCHETYPE_MARGIN} we show a blend. <b>Active time</b> caps idle gaps at {GAP_CAP_SECONDS//60} min. <b>Fixes vs v1:</b> prompt mis-count, length inflation, idle-time over-count, random archetype, uncapped tool-diversity, and keyword “error” false-positives.</p>
     <p><b>Limits:</b> this measures observable behavior, not intent; detectors are heuristic and English-biased; it's a single snapshot, not a trend. Terse prompts that carry intent from the prior turn can under-score Direction.</p>
   </details>
 </section>
@@ -1060,7 +1150,7 @@ def _skill_levels(result):
         return max(1, min(5, int(score // 20) + 1))
     s = result["shrunk"]
     defs = [
-        ("Prompt direction & specificity", "Direction",
+        ("Briefing & specificity", "Direction",
          "name a goal + one anchor (path, constraint, or acceptance test) in most action prompts",
          {1: "Mostly short nudges with little context.", 2: "Occasional context; one constraint sometimes.",
           3: "Most prompts carry a goal + one anchor.", 4: "Goal + constraint + criterion are common.",

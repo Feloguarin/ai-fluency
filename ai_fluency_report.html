@@ -30,6 +30,8 @@ padding:26px 30px;text-align:center;min-width:240px;box-shadow:0 18px 50px rgba(
 section{margin:42px 0}
 h3{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--mut);border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:18px}
 .band-meaning{background:var(--p);border:1px solid var(--line);border-left:4px solid var(--ac);border-radius:12px;padding:16px 20px;color:#dfe2ff}
+.assess{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin-bottom:12px;font-size:15.5px;line-height:1.7;color:#e8eaff}
+.assess b{color:#fff}
 .ingest{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
 .ing{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
 .ing .n{font-size:24px;font-weight:700;color:var(--ac2)}
@@ -92,13 +94,13 @@ code{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}
       <svg width="170" height="170" style="transform:rotate(-90deg)">
         <circle cx="85" cy="85" r="74" fill="none" stroke="#23264a" stroke-width="12"/>
         <circle cx="85" cy="85" r="74" fill="none" stroke="url(#g)" stroke-width="12" stroke-linecap="round"
-          stroke-dasharray="367 999"/>
+          stroke-dasharray="363 999"/>
         <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#7c5cff"/><stop offset="1" stop-color="#3ad6c9"/></linearGradient></defs>
       </svg>
-      <div class="n"><b>79</b><s>/ 100</s></div>
+      <div class="n"><b>78</b><s>/ 100</s></div>
     </div>
     <div class="band">Advanced</div>
-    <div class="rawnote">raw 83 · confidence-adjusted 79</div>
+    <div class="rawnote">raw 83 · confidence-adjusted 78</div>
   </div>
   <div class="arch">
     <div class="emoji">🎬</div>
@@ -110,8 +112,13 @@ code{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}
 </div>
 
 <section>
+  <h3>Professional assessment</h3>
+  <p class="assess">You drive Claude like <b>🎬 The Director</b>. You delegate entire outcomes and trust the agent to run them end-to-end, steering with quick, confident nudges rather than hands-on edits or long briefs. The clearest signal is your delegation rate — <b>100/100</b>, from 51 hand-offs to subagents, background jobs and planning — paired with fast, terse prompts (median 89 characters).</p><p class="assess">Your strongest <i>self-driven</i> habit is how much you hand off — you give Claude whole jobs and trust it to run them end-to-end. That, plus the disciplined read→edit→verify loop your sessions show, is why your overall score lands at <b>78/100 (Advanced)</b>.</p><p class="assess">And the apparent tension, resolved: your lowest dimension is <b>Briefing</b> — but for a Director that isn't a contradiction, it's the <i>defining</i> growth edge. Directors win on how sharply they frame the work they hand off — and right now yours are often one-liners like “run it”, so Claude fills gaps you could have decided. You already hand off whole jobs well — the next gain is a sharper one-line brief and a wider tool range, so more handoffs land first-try and run in parallel. That's the step from Director to an Orchestrator.</p>
+</section>
+
+<section>
   <h3>What your score means</h3>
-  <div class="band-meaning"><b>Advanced (79/100).</b> You orchestrate rather than operate. Prompts encode goals, constraints and acceptance criteria; reading precedes editing as a habit; verification is near-automatic; you use planning and delegation fluently. You brief the agent like a senior teammate.</div>
+  <div class="band-meaning"><b>Advanced (78/100).</b> You orchestrate rather than operate. Prompts encode goals, constraints and acceptance criteria; reading precedes editing as a habit; verification is near-automatic; you use planning and delegation fluently. You brief the agent like a senior teammate.</div>
 </section>
 
 <section>
@@ -119,15 +126,15 @@ code{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}
   <div class="ingest">
     <div class="ing"><div class="n">135</div><div class="l">sessions scanned</div></div>
     <div class="ing"><div class="n">14</div><div class="l">projects</div></div>
-    <div class="ing"><div class="n">49.0 MB</div><div class="l">transcript data parsed</div></div>
+    <div class="ing"><div class="n">49.2 MB</div><div class="l">transcript data parsed</div></div>
     <div class="ing"><div class="n">31 days</div><div class="l">span of activity</div></div>
-    <div class="ing"><div class="n">152</div><div class="l">real prompts you typed</div></div>
+    <div class="ing"><div class="n">153</div><div class="l">real prompts you typed</div></div>
     <div class="ing"><div class="n">25 h</div><div class="l">hands-on active time</div></div>
   </div>
   <div class="honesty">
-    <b>The honest part:</b> we found 3,307 “user” records but only <b>152</b> are prompts <b>you</b> typed. We filtered out 3,155 that the old tool wrongly counted:
-    <ul><li><b>2,997</b> tool results</li><li><b>97</b> subagent turns</li><li><b>34</b> injected / pasted</li><li><b>27</b> meta-injected</li></ul>
-    <p style="color:var(--mut);font-size:13px;margin-top:10px">Your real prompts: median 89 chars · 45% under 80 chars · 25 h hands-on active time (idle gaps over 5 min are excluded — not raw wall-clock). Analyzed 100% on your machine; nothing was uploaded.</p>
+    <b>The honest part:</b> we found 3,331 “user” records but only <b>153</b> are prompts <b>you</b> typed. We filtered out 3,178 that the old tool wrongly counted:
+    <ul><li><b>3,020</b> tool results</li><li><b>97</b> subagent turns</li><li><b>34</b> injected / pasted</li><li><b>27</b> meta-injected</li></ul>
+    <p style="color:var(--mut);font-size:13px;margin-top:10px">Your real prompts: median 89 chars · 44% under 80 chars · 25 h hands-on active time (idle gaps over 5 min are excluded — not raw wall-clock). Analyzed 100% on your machine; nothing was uploaded.</p>
   </div>
 </section>
 
@@ -138,13 +145,13 @@ code{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}
         <div class="top"><span class="name">Verification <span class="tag s">Strength</span></span><span class="sval">100<span class="hint">/100</span></span></div>
         <div class="bar"><i style="width:100%"></i></div>
         <p class="def">Whether changes get checked (tests / build / app) before moving on.</p>
-        <p class="rate">68 of 80 edit-bursts verified (85%)<span class="wt"> · weight 22%</span></p>
+        <p class="rate">72 of 84 edit-bursts verified (86%)<span class="wt"> · weight 22%</span></p>
       </div>
       <div class="dim">
-        <div class="top"><span class="name">Context </span><span class="sval">100<span class="hint">/100</span></span></div>
+        <div class="top"><span class="name">Context-setting </span><span class="sval">100<span class="hint">/100</span></span></div>
         <div class="bar"><i style="width:100%"></i></div>
         <p class="def">Reading a file before editing it — grounded, not blind, changes.</p>
-        <p class="rate">314 of 317 edits were grounded in a prior read (99%)<span class="wt"> · weight 22%</span></p>
+        <p class="rate">327 of 330 edits were grounded in a prior read (99%)<span class="wt"> · weight 22%</span></p>
       </div>
       <div class="dim">
         <div class="top"><span class="name">Toolcraft </span><span class="sval">84<span class="hint">/100</span></span></div>
@@ -159,7 +166,7 @@ code{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}
         <p class="rate">4 correction turns (3% of prompts); 75% were specific<span class="wt"> · weight 18%</span></p>
       </div>
       <div class="dim">
-        <div class="top"><span class="name">Direction <span class="tag w">Top growth lever</span></span><span class="sval">48<span class="hint">/100</span></span></div>
+        <div class="top"><span class="name">Briefing <span class="tag w">Top growth lever</span></span><span class="sval">48<span class="hint">/100</span></span></div>
         <div class="bar"><i style="width:48%"></i></div>
         <p class="def">How clearly you tell the agent what you want before it acts.</p>
         <p class="rate">11% carry a constraint · 15% name a file/error · 12% state a why<span class="wt"> · weight 24%</span></p>
@@ -170,7 +177,7 @@ code{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}
   <h3>What to improve — and exactly how</h3>
   
       <div class="card prio">
-        <div class="ph">Priority 1 · Direction <span class="pscore">now 48/100</span></div>
+        <div class="ph">Priority 1 · Briefing <span class="pscore">now 48/100</span></div>
         <h4>Front-load one constraint and the &#x27;why&#x27; before the agent acts.</h4>
         <div class="wwh"><span class="lab">Where it shows up</span><ul class='ev'><li>“yes make the archetype reflect my behavior not claude&#x27;s so think of how to bake this to the system.” <span class="loc">— AI Muse</span></li><li>“create the folder please” <span class="loc">— AI browser agent bundle</span></li><li>“What happened? And tell me how to fix it.” <span class="loc">— AI browser agent bundle</span></li></ul></div>
         <div class="wwh"><span class="lab">How to fix it</span>
@@ -192,14 +199,14 @@ code{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}
   
       <div class="card keep">
         <div class="ph">Keep doing this · Verification <span class="pscore">100/100</span></div>
-        <p>Whether changes get checked (tests / build / app) before moving on. The evidence: 68 of 80 edit-bursts verified (85%). This is your foundation — build on it.</p>
+        <p>Whether changes get checked (tests / build / app) before moving on. The evidence: 72 of 84 edit-bursts verified (86%). This is your foundation — build on it.</p>
       </div>
 </section>
 
 <section>
   <h3>Your skill map</h3>
   <div class="skill">
-          <div class="sk-top"><span class="sk-name">Prompt direction &amp; specificity</span><span class="sk-dots"><span class="dot on"></span><span class="dot on"></span><span class="dot on"></span><span class="dot "></span><span class="dot "></span></span></div>
+          <div class="sk-top"><span class="sk-name">Briefing &amp; specificity</span><span class="sk-dots"><span class="dot on"></span><span class="dot on"></span><span class="dot on"></span><span class="dot "></span><span class="dot "></span></span></div>
           <p class="sk-now">Most prompts carry a goal + one anchor.</p>
           <p class="sk-next"><b>Next:</b> name a goal + one anchor (path, constraint, or acceptance test) in most action prompts</p></div><div class="skill">
           <div class="sk-top"><span class="sk-name">Verification discipline</span><span class="sk-dots"><span class="dot on"></span><span class="dot on"></span><span class="dot on"></span><span class="dot on"></span><span class="dot on"></span></span></div>
@@ -220,7 +227,7 @@ code{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}
   <h3>Archetype affinity</h3>
   <div class="bar-item"><div class="bl">🎬 The Director</div>
           <div class="bt"><i style="width:80%"></i></div><div class="bv">+0.60</div></div><div class="bar-item"><div class="bl">🪄 The Orchestrator</div>
-          <div class="bt"><i style="width:58%"></i></div><div class="bv">+0.15</div></div><div class="bar-item"><div class="bl">⚡ The Sprinter</div>
+          <div class="bt"><i style="width:57%"></i></div><div class="bv">+0.15</div></div><div class="bar-item"><div class="bl">⚡ The Sprinter</div>
           <div class="bt"><i style="width:48%"></i></div><div class="bv">-0.04</div></div><div class="bar-item"><div class="bl">🛠️ The Craftsman</div>
           <div class="bt"><i style="width:17%"></i></div><div class="bv">-0.66</div></div><div class="bar-item"><div class="bl">🧭 The Explorer</div>
           <div class="bt"><i style="width:3%"></i></div><div class="bv">-0.94</div></div>
@@ -228,7 +235,7 @@ code{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}
 
 <section>
   <h3>Honest numbers at a glance</h3>
-  <ul class="facts"><li>152 prompts you actually typed (out of 3,307 user records — the rest were tool output, subagent turns or system text)</li><li>median prompt is 89 characters (16 words); 45% are under 80 chars</li><li>25 hours of hands-on time (idle gaps over 5 min excluded)</li><li>42 distinct tools used; 2,997 tool calls in total</li><li>most-used tool: Bash</li><li>51 delegations (subagents / background jobs / planning)</li></ul>
+  <ul class="facts"><li>153 prompts you actually typed (out of 3,331 user records — the rest were tool output, subagent turns or system text)</li><li>median prompt is 89 characters (16 words); 44% are under 80 chars</li><li>25 hours of hands-on time (idle gaps over 5 min excluded)</li><li>42 distinct tools used; 3,020 tool calls in total</li><li>most-used tool: Bash</li><li>51 delegations (subagents / background jobs / planning)</li></ul>
 </section>
 
 <section>
@@ -237,7 +244,7 @@ code{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}
     <p><b>Only real prompts are scored.</b> A “user” record counts as a prompt only if it is not a tool-result, not a subagent (sidechain) turn, not meta/injected, not a slash-command stub, and not a paste/system-prompt over 6,000 chars or opening with “You are …”. This removes the contamination that made the old tool report a 277-vs-real average.</p>
     <p><b>Everything is a rate, then squashed.</b> Each dimension is a per-prompt or per-opportunity rate run through min(1, rate/target), so doing more work never raises the score — only doing it better does. Weights: Direction 24%, Verification 22%, Context 22%, Iteration 18%, Toolcraft 14%.</p>
     <p><b>Thin signals are hedged, not faked.</b> Each dimension is pulled toward a neutral 50 in proportion to how many opportunities it had (e.g. Iteration had only 4 corrections, so it is flagged “low data”). Both raw and confidence-adjusted scores are shown.</p>
-    <p><b>Archetype</b> describes your <b>driving style</b>, not the collaboration's quality, so it is built on a separate <b>agency-weighted</b> vector: Direction, Iteration, Toolcraft and Delegation (handoffs to subagents/background jobs/planning) count fully, while Verification and Context — habits Claude largely does on its own — are discounted (35% and 15% weight). It is the nearest prototype by cosine on z-scored values; if the top two are within 0.06 we show a blend. <b>Active time</b> caps idle gaps at 5 min. <b>Fixes vs v1:</b> prompt mis-count, length inflation, idle-time over-count, random archetype, uncapped tool-diversity, and keyword “error” false-positives.</p>
+    <p><b>Archetype</b> describes your <b>driving style</b>, not the collaboration's quality, so it is built on a separate <b>agency-weighted</b> vector: Briefing, Iteration, Toolcraft and Delegation (handoffs to subagents/background jobs/planning) count fully, while Verification and Context — habits Claude largely does on its own — are discounted (35% and 15% weight). It is the nearest prototype by cosine on z-scored values; if the top two are within 0.06 we show a blend. <b>Active time</b> caps idle gaps at 5 min. <b>Fixes vs v1:</b> prompt mis-count, length inflation, idle-time over-count, random archetype, uncapped tool-diversity, and keyword “error” false-positives.</p>
     <p><b>Limits:</b> this measures observable behavior, not intent; detectors are heuristic and English-biased; it's a single snapshot, not a trend. Terse prompts that carry intent from the prior turn can under-score Direction.</p>
   </details>
 </section>
