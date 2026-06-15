@@ -761,5 +761,55 @@ class TestMultiSourceCLI(unittest.TestCase):
         self.assertFalse(payload["capabilities"]["reads"])
 
 
+class TestCombinedReport(unittest.TestCase):
+    def _entry(self, files, adapter):
+        c = insight.parse(files, adapter)
+        r = insight.analyze(c, adapter.capabilities)
+        cards, strength = insight.build_action_plan(c, r)
+        return {"source": adapter.name, "corpus": c, "result": r, "cards": cards, "strength": strength}
+
+    def test_combined_renders_all_sources_and_skill_map(self):
+        tmp = tempfile.mkdtemp()
+        cc = os.path.join(tmp, "cc"); os.makedirs(cc)
+        write_session(cc, "s.jsonl", [
+            user_text("add a /health endpoint to server.py, only that file"),
+            assistant_tool("Read", file_path="/x/server.py"),
+            assistant_tool("Edit", file_path="/x/server.py"),
+            assistant_tool("Bash", command="pytest -q"),
+            user_text("run it")])
+        e1 = self._entry(insight.ClaudeCodeAdapter.discover(cc), insight.ClaudeCodeAdapter)
+        cx = os.path.join(tmp, "cx"); os.makedirs(cx)
+        write_session(cx, "rollout-x.jsonl", [
+            codex_line("session_meta", {"id": "s", "cwd": "/Users/x/p"}),
+            codex_line("response_item", {"type": "message", "role": "user",
+                                         "content": [{"type": "input_text", "text": "build a parser in parser.py"}]}),
+            codex_line("response_item", {"type": "function_call", "name": "exec_command",
+                                         "arguments": json.dumps({"cmd": "pytest -q"})})])
+        e2 = self._entry(insight.CodexAdapter.discover(cx), insight.CodexAdapter)
+        analysis = {
+            "overall_read": "You delegate fluently; sharpen your briefs.",
+            "skill_map": [
+                {"competency": "Delegation", "level": 4, "level_label": "Advanced",
+                 "summary": "Hands off whole jobs.", "evidence": ["e2e plans"], "next_move": "add a success line"},
+                {"competency": "Description", "level": 2, "level_label": "Developing",
+                 "summary": "Terse.", "evidence": ["'run it'"], "next_move": "name a file + a constraint"},
+                {"competency": "Discernment", "level": 4, "level_label": "Advanced",
+                 "summary": "Verifies.", "evidence": ["pytest"], "next_move": "carry into Desktop"},
+                {"competency": "Diligence", "level": 3, "level_label": "Proficient",
+                 "summary": "Owns it.", "evidence": ["teardown"], "next_move": "verify before live"}],
+            "top_growth": [{"title": "Front-load one anchor", "why": "fewer rounds", "how": "name a file",
+                            "example_before": "run it", "example_after": "run pytest -q and paste output"}],
+            "strengths": ["elite delegation"]}
+        html = insight.build_combined_html([e1, e2], analysis)
+        for tok in ("Claude Code", "OpenAI Codex CLI", "Per-tool breakdown", "Platzi",
+                    "analyzed against the AI Fluency framework", "Front-load one anchor", "Delegation"):
+            self.assertIn(tok, html)
+        self.assertNotIn("/Users/", html)
+        # deterministic fallback (no analysis) still renders and points to /ai-fluency
+        html2 = insight.build_combined_html([e1, e2], None)
+        self.assertIn("/ai-fluency", html2)
+        self.assertIn("Per-tool breakdown", html2)
+
+
 if __name__ == "__main__":
     unittest.main()

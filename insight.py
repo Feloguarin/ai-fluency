@@ -1776,6 +1776,124 @@ _SOURCE_LABELS = {
     "codex": "OpenAI Codex CLI", "cursor": "Cursor",
 }
 
+# Platzi-branded theme. Colors + font are taken from Platzi's production design tokens
+# (#0ae98a primary green on #13161c dark; Roobert geometric sans, with a system fallback so
+# the report stays self-contained/offline). Defined as a plain string and interpolated into the
+# report f-string via {_PLATZI_CSS}, so it uses normal CSS braces.
+_PLATZI_CSS = """
+:root{
+  --bg:#13161c;--p:#1b1f27;--p2:#22272f;--ink:#f7faf7;--mut:#c4c8ce;--mut2:#87909d;
+  --line:#2d323a;--track:#23282f;--ac:#0ae98a;--acd:#05a460;--good:#0ae98a;
+  --warn:#f5c14e;--bad:#ff476c;
+  --main:'Roobert','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  --mono:'Roobert Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:radial-gradient(1200px 680px at 80% -18%,#0f2a20 0%,var(--bg) 52%);color:var(--ink);
+font:16px/1.6 var(--main);padding-bottom:80px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:920px;margin:0 auto;padding:0 22px}
+header{padding:46px 0 10px;text-align:center}
+.brandbar{display:flex;align-items:center;justify-content:center;gap:11px;margin-bottom:20px}
+.logo{width:26px;height:26px;border-radius:7px;background:var(--ac);display:inline-flex;align-items:center;
+justify-content:center;color:#0a2a1d;font-weight:800;font-size:17px;line-height:1}
+.brand{font-weight:800;font-size:20px;letter-spacing:-.02em;color:var(--ink)}
+.kick{letter-spacing:.18em;text-transform:uppercase;font-size:11px;color:var(--mut2);
+border-left:1px solid var(--line);padding-left:11px}
+h1{font-size:35px;line-height:1.08;margin:8px 0 6px;letter-spacing:-.025em}
+.sub{color:var(--mut);max-width:640px;margin:8px auto 0;font-size:15px}
+.hero{margin:30px auto 0;display:flex;gap:18px;align-items:stretch;flex-wrap:wrap;justify-content:center}
+.score-card{background:linear-gradient(160deg,var(--p2),var(--p));border:1px solid var(--line);border-radius:20px;
+padding:26px 30px;text-align:center;min-width:240px;box-shadow:0 20px 50px rgba(0,0,0,.45)}
+.ring{position:relative;width:170px;height:170px;margin:0 auto}
+.ring .n{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.ring .n b{font-size:50px;line-height:1;color:var(--ink)}
+.ring .n s{text-decoration:none;color:var(--mut2);font-size:13px}
+.band{margin-top:12px;font-size:19px;font-weight:800;color:var(--ac)}
+.rawnote{color:var(--mut2);font-size:12px;margin-top:4px}
+.arch{flex:1;min-width:260px;background:var(--p);border:1px solid var(--line);border-radius:20px;padding:24px 26px;text-align:left}
+.arch .emoji{font-size:40px}
+.arch h2{font-size:23px;margin:6px 0;letter-spacing:-.01em}
+.arch p{color:var(--mut);font-size:15px}
+.prov{background:rgba(245,193,78,.1);border:1px solid rgba(245,193,78,.35);color:#ffe6b8;border-radius:12px;padding:12px 16px;margin:22px 0 0;font-size:14px}
+section{margin:40px 0}
+h3{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--mut2);border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:18px}
+.band-meaning{background:var(--p);border:1px solid var(--line);border-left:3px solid var(--ac);border-radius:12px;padding:16px 20px;color:var(--ink)}
+.assess{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin-bottom:12px;font-size:15.5px;line-height:1.7;color:var(--ink)}
+.assess b{color:#fff}
+.srcgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+.srccard{background:var(--p);border:1px solid var(--line);border-radius:16px;padding:18px 20px;text-align:center}
+.srccard.lead{border-color:var(--ac);box-shadow:0 0 0 1px var(--ac) inset}
+.srccard .sname{font-weight:700;font-size:14px;margin-bottom:10px;color:var(--ink)}
+.srccard .big{font-size:40px;font-weight:800;line-height:1;color:var(--ac)}
+.srccard .bb{color:var(--mut2);font-size:12px;margin-top:2px}
+.srccard .meta{color:var(--mut);font-size:13px;margin-top:10px;border-top:1px solid var(--line);padding-top:10px}
+.srccard .arche{color:var(--ink);font-weight:600;font-size:13.5px;margin-top:8px}
+.ingest{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.ing{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+.ing .n{font-size:24px;font-weight:800;color:var(--ac)}
+.ing .l{color:var(--mut);font-size:13px;margin-top:2px}
+.honesty{margin-top:16px;background:var(--p);border:1px solid var(--line);border-radius:14px;padding:16px 20px}
+.honesty b{color:var(--ink)}
+.honesty ul{list-style:none;display:flex;flex-wrap:wrap;gap:8px 22px;margin-top:8px}
+.honesty li{color:var(--mut);font-size:14px}
+.dim{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin-bottom:12px}
+.dim .top{display:flex;justify-content:space-between;align-items:baseline}
+.dim .name{font-weight:700;font-size:17px}
+.dim .sval{font-size:22px;font-weight:800} .dim .hint{color:var(--mut2);font-size:12px;font-weight:400}
+.dim-h{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:6px}
+.dim-h b{font-size:17px}
+.pill{font-size:12px;font-weight:700;color:#0a2a1d;background:var(--ac);border-radius:99px;padding:3px 11px;white-space:nowrap}
+.ev{margin:8px 0 0 0;padding-left:18px} .ev li{color:var(--mut);font-size:14px;margin:3px 0}
+.next{margin-top:8px;font-size:14.5px} .next b{color:#fff}
+.bar{height:9px;background:var(--track);border-radius:99px;overflow:hidden;margin:11px 0 9px}
+.bar>i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--acd),var(--ac))}
+.def{color:var(--ink);font-size:14.5px} .rate{color:var(--mut);font-size:13px;margin-top:3px} .wt{opacity:.7}
+.tag{font-size:10.5px;padding:2px 8px;border-radius:99px;font-weight:700;margin-left:6px;vertical-align:middle}
+.tag.s{background:rgba(10,233,138,.16);color:var(--good)} .tag.w{background:rgba(255,71,108,.16);color:var(--bad)}
+.tag.ld{background:rgba(196,200,206,.14);color:var(--mut)}
+.bar-item{display:flex;align-items:center;gap:12px;margin:7px 0}
+.bl{min-width:170px;font-size:14px} .bt{flex:1;height:7px;background:var(--track);border-radius:99px;overflow:hidden}
+.bt>i{display:block;height:100%;background:linear-gradient(90deg,var(--acd),var(--ac))} .bv{min-width:46px;text-align:right;color:var(--mut);font-size:13px}
+.card{background:var(--p);border:1px solid var(--line);border-radius:16px;padding:18px 22px;margin-bottom:14px}
+.prio{border-left:3px solid var(--warn)} .keep{border-left:3px solid var(--good)}
+.ph{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--mut2)}
+.pscore{float:right;color:var(--ac);letter-spacing:0}
+.card h4{font-size:18px;margin:8px 0 12px}
+.wwh{margin:12px 0} .wwh .lab{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut2);margin-bottom:6px}
+ul.ev{list-style:none} ul.ev li{background:var(--p2);border-radius:9px;padding:9px 12px;margin-bottom:7px;font-size:14px}
+.loc{color:var(--mut2);font-size:12.5px} .ev-none{color:var(--good);font-size:14px}
+.ba{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px}
+.why{color:var(--mut);font-size:14px;margin:2px 0 4px} .why b{color:var(--ink)}
+.how{font-size:14.5px;margin:0 0 4px}
+.sk-what{color:var(--ink);font-size:13.5px;margin-top:5px}
+.lvl{font-size:11px;color:var(--ac);font-weight:700;margin-left:6px}
+.before,.after{border-radius:10px;padding:10px 13px;font-size:14px}
+.before{background:rgba(255,71,108,.08);color:#ffc9d4} .after{background:rgba(10,233,138,.08);color:#bff0d8}
+.before span,.after span{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.08em;opacity:.7;margin-bottom:3px}
+.tgt{margin-top:10px;color:var(--ac);font-size:14px}
+.skill{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:14px 18px;margin-bottom:10px}
+.sk-top{display:flex;justify-content:space-between;align-items:center} .sk-name{font-weight:700}
+.dot{display:inline-block;width:11px;height:11px;border-radius:50%;background:var(--track);margin-left:4px}
+.dot.on{background:var(--ac)}
+.sk-now{color:var(--mut);font-size:13.5px;margin-top:6px} .sk-next{font-size:13.5px;margin-top:3px}
+.facts{list-style:none} .facts li{background:var(--p);border:1px solid var(--line);border-radius:10px;padding:11px 15px;margin-bottom:8px;font-size:14.5px}
+.facts li::before{content:"\\203A";color:var(--ac);font-weight:800;margin-right:9px}
+details{background:var(--p);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin-top:14px}
+summary{cursor:pointer;color:var(--mut);font-size:14px} details p,details li{color:var(--mut);font-size:13px;margin-top:8px}
+footer{text-align:center;color:var(--mut2);font-size:13px;margin-top:46px}
+.seg{display:flex;align-items:center;gap:10px;margin:34px 0 4px}
+.seg .badge{background:var(--ac);color:#0a2a1d;font-weight:800;font-size:12px;padding:3px 10px;border-radius:7px}
+.seg .sscore{margin-left:auto;color:var(--mut);font-size:13px}
+code{background:var(--track);padding:1px 6px;border-radius:5px;font-size:13px;font-family:var(--mono)}
+@media(max-width:640px){.ba{grid-template-columns:1fr}.bl{min-width:120px}}
+"""
+
+
+def _platzi_header(title, sub):
+    return (f'<header>\n  <div class="brandbar"><span class="logo">P</span>'
+            f'<span class="brand">Platzi</span><span class="kick">AI Fluency Report</span></div>\n'
+            f'  <h1>{title}</h1>\n  <p class="sub">{sub}</p>\n</header>')
+
 
 def build_html(corpus, result, cards, strength, archive_info=None, analysis=None,
                source=None, capabilities=None):
@@ -1964,98 +2082,9 @@ def build_html(corpus, result, cards, strength, archive_info=None, analysis=None
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Your AI Fluency Report</title>
-<style>
-:root{{--bg:#0c0d18;--p:#15172a;--p2:#1d2040;--ink:#eef0ff;--mut:#a4a8cc;--line:#2a2d52;
---ac:#7c5cff;--ac2:#3ad6c9;--good:#3ad68a;--warn:#ffb454;--bad:#ff6b8b;}}
-*{{box-sizing:border-box;margin:0;padding:0}}
-body{{background:radial-gradient(1100px 640px at 72% -12%,#262a55 0%,var(--bg) 55%);color:var(--ink);
-font:16px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;padding-bottom:80px}}
-.wrap{{max-width:880px;margin:0 auto;padding:0 22px}}
-header{{text-align:center;padding:60px 0 12px}}
-.kick{{letter-spacing:.22em;text-transform:uppercase;font-size:12px;color:var(--mut)}}
-h1{{font-size:34px;margin:10px 0 4px}}
-.sub{{color:var(--mut);max-width:620px;margin:6px auto 0;font-size:15px}}
-.hero{{margin:30px auto 0;display:flex;gap:22px;align-items:stretch;flex-wrap:wrap;justify-content:center}}
-.score-card{{background:linear-gradient(135deg,var(--p2),var(--p));border:1px solid var(--line);border-radius:22px;
-padding:26px 30px;text-align:center;min-width:240px;box-shadow:0 18px 50px rgba(0,0,0,.4)}}
-.ring{{position:relative;width:170px;height:170px;margin:0 auto}}
-.ring .n{{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}}
-.ring .n b{{font-size:50px;line-height:1}}
-.ring .n s{{text-decoration:none;color:var(--mut);font-size:13px}}
-.band{{margin-top:12px;font-size:19px;font-weight:700;color:var(--ac2)}}
-.rawnote{{color:var(--mut);font-size:12px;margin-top:4px}}
-.arch{{flex:1;min-width:260px;background:var(--p);border:1px solid var(--line);border-radius:22px;padding:24px 26px;text-align:left}}
-.arch .emoji{{font-size:40px}}
-.arch h2{{font-size:23px;margin:6px 0}}
-.arch p{{color:var(--mut);font-size:15px}}
-.prov{{background:rgba(255,180,84,.1);border:1px solid rgba(255,180,84,.35);color:#ffe6c2;border-radius:12px;padding:12px 16px;margin:22px 0 0;font-size:14px}}
-section{{margin:42px 0}}
-h3{{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--mut);border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:18px}}
-.band-meaning{{background:var(--p);border:1px solid var(--line);border-left:4px solid var(--ac);border-radius:12px;padding:16px 20px;color:#dfe2ff}}
-.assess{{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin-bottom:12px;font-size:15.5px;line-height:1.7;color:#e8eaff}}
-.assess b{{color:#fff}}
-.ingest{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}}
-.ing{{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:14px 16px}}
-.ing .n{{font-size:24px;font-weight:700;color:var(--ac2)}}
-.ing .l{{color:var(--mut);font-size:13px;margin-top:2px}}
-.honesty{{margin-top:16px;background:var(--p);border:1px solid var(--line);border-radius:14px;padding:16px 20px}}
-.honesty b{{color:var(--ink)}}
-.honesty ul{{list-style:none;display:flex;flex-wrap:wrap;gap:8px 22px;margin-top:8px}}
-.honesty li{{color:var(--mut);font-size:14px}}
-.dim{{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin-bottom:12px}}
-.dim .top{{display:flex;justify-content:space-between;align-items:baseline}}
-.dim .name{{font-weight:700;font-size:17px}}
-.dim .sval{{font-size:22px;font-weight:800}} .dim .hint{{color:var(--mut);font-size:12px;font-weight:400}}
-.dim-h{{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:6px}}
-.dim-h b{{font-size:17px}}
-.pill{{font-size:12px;font-weight:700;color:var(--ink);background:var(--p2);border:1px solid var(--line);border-radius:99px;padding:3px 11px;white-space:nowrap}}
-.ev{{margin:8px 0 0 0;padding-left:18px}} .ev li{{color:var(--mut);font-size:14px;margin:3px 0}}
-.next{{margin-top:8px;font-size:14.5px}} .next b{{color:#fff}}
-.bar{{height:9px;background:#23264a;border-radius:99px;overflow:hidden;margin:11px 0 9px}}
-.bar>i{{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--ac),var(--ac2))}}
-.def{{color:var(--ink);font-size:14.5px}} .rate{{color:var(--mut);font-size:13px;margin-top:3px}} .wt{{opacity:.7}}
-.tag{{font-size:10.5px;padding:2px 8px;border-radius:99px;font-weight:700;margin-left:6px;vertical-align:middle}}
-.tag.s{{background:rgba(58,214,138,.16);color:var(--good)}} .tag.w{{background:rgba(255,107,139,.16);color:var(--bad)}}
-.tag.ld{{background:rgba(164,168,204,.16);color:var(--mut)}}
-.bar-item{{display:flex;align-items:center;gap:12px;margin:7px 0}}
-.bl{{min-width:160px;font-size:14px}} .bt{{flex:1;height:7px;background:#23264a;border-radius:99px;overflow:hidden}}
-.bt>i{{display:block;height:100%;background:linear-gradient(90deg,var(--ac),var(--ac2))}} .bv{{min-width:46px;text-align:right;color:var(--mut);font-size:13px}}
-.card{{background:var(--p);border:1px solid var(--line);border-radius:16px;padding:18px 22px;margin-bottom:14px}}
-.prio{{border-left:4px solid var(--warn)}} .keep{{border-left:4px solid var(--good)}}
-.ph{{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--mut)}}
-.pscore{{float:right;color:var(--ac2);letter-spacing:0}}
-.card h4{{font-size:18px;margin:8px 0 12px}}
-.wwh{{margin:12px 0}} .wwh .lab{{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);margin-bottom:6px}}
-ul.ev{{list-style:none}} ul.ev li{{background:var(--p2);border-radius:9px;padding:9px 12px;margin-bottom:7px;font-size:14px}}
-.loc{{color:var(--mut);font-size:12.5px}} .ev-none{{color:var(--good);font-size:14px}}
-.ba{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px}}
-.why{{color:var(--mut);font-size:14px;margin:2px 0 4px}} .why b{{color:var(--ink)}}
-.how{{font-size:14.5px;margin:0 0 4px}}
-.sk-what{{color:var(--ink);font-size:13.5px;margin-top:5px}}
-.lvl{{font-size:11px;color:var(--ac2);font-weight:600;margin-left:6px}}
-.before,.after{{border-radius:10px;padding:10px 13px;font-size:14px}}
-.before{{background:rgba(255,107,139,.08);color:#ffd0da}} .after{{background:rgba(58,214,138,.08);color:#cfeede}}
-.before span,.after span{{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.08em;opacity:.7;margin-bottom:3px}}
-.tgt{{margin-top:10px;color:var(--ac2);font-size:14px}}
-.skill{{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:14px 18px;margin-bottom:10px}}
-.sk-top{{display:flex;justify-content:space-between;align-items:center}} .sk-name{{font-weight:700}}
-.dot{{display:inline-block;width:11px;height:11px;border-radius:50%;background:#2a2d52;margin-left:4px}}
-.dot.on{{background:linear-gradient(135deg,var(--ac),var(--ac2))}}
-.sk-now{{color:var(--mut);font-size:13.5px;margin-top:6px}} .sk-next{{font-size:13.5px;margin-top:3px}}
-.facts{{list-style:none}} .facts li{{background:var(--p);border:1px solid var(--line);border-radius:10px;padding:11px 15px;margin-bottom:8px;font-size:14.5px}}
-.facts li::before{{content:"›";color:var(--ac2);font-weight:800;margin-right:9px}}
-details{{background:var(--p);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin-top:14px}}
-summary{{cursor:pointer;color:var(--mut);font-size:14px}} details p,details li{{color:var(--mut);font-size:13px;margin-top:8px}}
-footer{{text-align:center;color:var(--mut);font-size:13px;margin-top:46px}}
-code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
-@media(max-width:640px){{.ba{{grid-template-columns:1fr}}.bl{{min-width:120px}}}}
-</style></head><body><div class="wrap">
+<style>{_PLATZI_CSS}</style></head><body><div class="wrap">
 
-<header>
-  <div class="kick">Claude Insight · AI Fluency Report</div>
-  <h1>How skillfully you build with AI</h1>
-  <p class="sub">A read of how you actually drive {_esc(src_label)} — measured from your real prompts and the agent's real actions, analyzed entirely on your machine.</p>
-</header>
+{_platzi_header("How skillfully you build with AI", "A read of how you actually drive " + _esc(src_label) + " — measured from your real prompts and the agent&#39;s real actions, analyzed entirely on your machine.")}
 
 {prov_banner}
 
@@ -2063,10 +2092,10 @@ code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
   <div class="score-card">
     <div class="ring">
       <svg width="170" height="170" style="transform:rotate(-90deg)">
-        <circle cx="85" cy="85" r="74" fill="none" stroke="#23264a" stroke-width="12"/>
+        <circle cx="85" cy="85" r="74" fill="none" stroke="#23282f" stroke-width="12"/>
         <circle cx="85" cy="85" r="74" fill="none" stroke="url(#g)" stroke-width="12" stroke-linecap="round"
           stroke-dasharray="{2*math.pi*74*result['overall']/100:.0f} 999"/>
-        <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#7c5cff"/><stop offset="1" stop-color="#3ad6c9"/></linearGradient></defs>
+        <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#05a460"/><stop offset="1" stop-color="#0ae98a"/></linearGradient></defs>
       </svg>
       <div class="n"><b>{result['overall']}</b><s>/ 100</s></div>
     </div>
@@ -2151,7 +2180,112 @@ code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
   </details>
 </section>
 
-<footer>Generated locally by Claude Insight v2 · your transcripts never left this machine.</footer>
+<footer>Generated locally by Claude Insight · analyzed entirely on your machine — nothing was uploaded. <span style="color:var(--ac)">Platzi</span></footer>
+</div></body></html>"""
+
+
+def _combined_overall_read(entries):
+    """Deterministic cross-tool narrative used when no AI analysis is supplied."""
+    ranked = sorted(entries, key=lambda e: e["result"]["overall"], reverse=True)
+    names = ", ".join(f"{_SOURCE_LABELS.get(e['source'], e['source'])} {e['result']['overall']}/100"
+                      for e in ranked)
+    parts = [f"Measured across {len(entries)} coding agent{'s' if len(entries) != 1 else ''} — {names}."]
+    weak = Counter(e["cards"][0]["dim"] for e in entries if e["cards"])
+    arch = Counter(e["result"]["archetype"]["primary"] for e in entries)
+    if arch:
+        parts.append(f"Your dominant driving style is {arch.most_common(1)[0][0]}.")
+    if weak:
+        parts.append(f"The growth edge that recurs across tools is {disp(weak.most_common(1)[0][0])}.")
+    return " ".join(parts)
+
+
+def _src_dim_bars(result):
+    """Compact per-source dimension bars (not-measurable dims rendered as N/A)."""
+    na = set(result.get("na_dims") or [])
+    order = sorted([n for n in WEIGHTS if n not in na], key=lambda n: result["shrunk"][n], reverse=True)
+    rows = ""
+    for name in order:
+        sc = round(result["shrunk"][name])
+        rows += (f'<div class="bar-item"><div class="bl">{_esc(disp(name))}</div>'
+                 f'<div class="bt"><i style="width:{sc}%"></i></div><div class="bv">{sc}</div></div>')
+    for name in na:
+        rows += (f'<div class="bar-item"><div class="bl">{_esc(disp(name))}</div>'
+                 f'<div class="bt"></div><div class="bv">N/A</div></div>')
+    return rows
+
+
+def build_combined_html(entries, analysis=None):
+    """One Platzi-branded report covering several sources. `entries` is a list of
+    {source, corpus, result, cards, strength}. Sources are scored independently (not merged);
+    the optional `analysis` is a single cross-tool skill map (from the /ai-fluency pipeline)."""
+    ranked = sorted(entries, key=lambda e: e["result"]["overall"], reverse=True)
+    n = len(entries)
+    header = _platzi_header(
+        _esc(f"Your AI fluency across {n} tool{'s' if n != 1 else ''}"),
+        "One read of how you actually drive your AI coding agents — measured locally from your real "
+        "prompts and the agents&#39; real actions, then analyzed against the AI Fluency framework.")
+
+    src_cards = ""
+    for i, e in enumerate(ranked):
+        r, c, a = e["result"], e["corpus"], e["result"]["archetype"]
+        lead = " lead" if i == 0 else ""
+        src_cards += (
+            f'<div class="srccard{lead}"><div class="sname">{_esc(_SOURCE_LABELS.get(e["source"], e["source"]))}</div>'
+            f'<div class="big">{r["overall"]}</div><div class="bb">/100 · {_esc(r["band"])}</div>'
+            f'<div class="arche">{_esc(a["label"])}</div>'
+            f'<div class="meta">{len(c.real_prompts)} prompts · {len(c.projects)} projects · {c.active_seconds/3600:.0f}h</div></div>')
+
+    if analysis:
+        analysis_section = _analysis_section_html(analysis, [])   # cross-tool: nothing suppressed
+        read_section = ""
+    else:
+        analysis_section = (
+            '<section><h3>AI skill map</h3><div class="assess">Run <code>/ai-fluency</code> — '
+            'Sonnet 4.6 explores your evidence and Opus 4.8 writes a 4-competency skill map grounded in '
+            'the AI Fluency framework — to layer the qualitative analysis on top of these numbers.</div></section>')
+        read_section = f'<section><h3>Overview</h3><div class="assess">{_esc(_combined_overall_read(entries))}</div></section>'
+
+    growth = ""
+    for g in (analysis or {}).get("top_growth", [])[:3]:
+        growth += (
+            f'<div class="card prio"><div class="ph">Growth lever</div><h4>{_esc(g.get("title", ""))}</h4>'
+            f'<p class="why"><b>Why it matters.</b> {_esc(g.get("why", ""))}</p>'
+            f'<div class="wwh"><span class="lab">How to grow it</span><p class="how">{_esc(g.get("how", ""))}</p>'
+            f'<div class="ba"><div class="before"><span>Instead of</span>“{_esc(g.get("example_before", ""))}”</div>'
+            f'<div class="after"><span>Stronger</span>“{_esc(g.get("example_after", ""))}”</div></div></div></div>')
+    growth_section = f'<section><h3>Your highest-leverage moves</h3>{growth}</section>' if growth else ""
+
+    segs = ""
+    for e in ranked:
+        r = e["result"]
+        na = [disp(x) for x in (r.get("na_dims") or [])]
+        na_note = f' · {", ".join(na)} not measurable' if na else ""
+        segs += (
+            f'<div class="seg"><span class="badge">{_esc(_SOURCE_LABELS.get(e["source"], e["source"]))}</span>'
+            f'<span class="sscore">{r["overall"]}/100 · {_esc(r["band"])} · {_esc(r["archetype"]["label"])}{_esc(na_note)}</span></div>'
+            f'<div class="card">{_src_dim_bars(r)}</div>')
+
+    ing = ""
+    for e in ranked:
+        c = e["corpus"]
+        ing += (f'<div class="ing"><div class="n">{len(c.real_prompts)}</div>'
+                f'<div class="l">{_esc(_SOURCE_LABELS.get(e["source"], e["source"]))} prompts</div></div>')
+
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Your AI Fluency Report</title>
+<style>{_PLATZI_CSS}</style></head><body><div class="wrap">
+{header}
+<section><h3>Your tools at a glance</h3><div class="srcgrid">{src_cards}</div></section>
+{read_section}
+{analysis_section}
+{growth_section}
+<section><h3>Per-tool breakdown</h3>{segs}</section>
+<section><h3>How much data this is based on</h3><div class="ingest">{ing}</div>
+<div class="honesty"><b>Honest scope.</b> Each tool is scored independently — different tools have different
+baselines, so cross-tool scores are not merged into one number. Everything was measured locally from your
+real prompts; absolute home paths and usernames are scrubbed; nothing was uploaded.</div></section>
+<footer>Generated locally by Claude Insight · analyzed entirely on your machine. <span style="color:var(--ac)">Platzi</span></footer>
 </div></body></html>"""
 
 
@@ -2335,24 +2469,58 @@ def main(argv=None):
             print(f"Could not read --analysis {args.analysis}: {e}", file=sys.stderr)
             return 1
 
-    # --source all: one report per source that has data on this machine.
+    # --source all: ONE combined report across every source with data on this machine. Each source
+    # is measured independently; --evidence writes a per-source bundle (the /ai-fluency pipeline reads
+    # them all to author one cross-tool skill map, passed back via --analysis).
     if args.source == "all":
         if args.path:
             print("--source all reads each source's standard location and can't be combined with an "
                   "explicit path (a path implies a single source). Pass a specific --source with the path.",
                   file=sys.stderr)
             return 2
-        if analysis:
-            print("  Note: --analysis applies to a single source; ignoring it for --source all.", file=sys.stderr)
-        produced = 0
+        entries = []
         for adapter in ADAPTERS.values():
             if not adapter.detect():
                 continue
-            rc = _run_source(adapter, args, _source_out_path(args.out, adapter.name), None, multi=True)
-            produced += 1 if rc == 0 else 0
-        if not produced:
+            files = adapter.discover(None)
+            if not files:
+                continue
+            corpus = parse(files, adapter)
+            if not corpus.real_prompts:
+                continue
+            result = analyze(corpus, adapter.capabilities)
+            cards, strength = build_action_plan(corpus, result)
+            entries.append({"source": adapter.name, "corpus": corpus, "result": result,
+                            "cards": cards, "strength": strength})
+            if args.evidence and args.evidence != "-":
+                bundle = build_evidence(corpus, result, cards, source=adapter.name,
+                                        capabilities=adapter.capabilities)
+                ep = os.path.abspath(_source_out_path(args.evidence, adapter.name))
+                os.makedirs(os.path.dirname(ep) or ".", exist_ok=True)
+                with open(ep, "w", encoding="utf-8") as f:
+                    f.write(json.dumps(bundle, indent=2))
+                print(f"  Evidence ({adapter.name}): {ep}", file=sys.stderr)
+        if not entries:
             print("No coding-agent logs found for any source on this machine.", file=sys.stderr)
             return 1
+        if args.json:
+            print(json.dumps({"sources": [
+                {"source": e["source"], "overall": e["result"]["overall"], "band": e["result"]["band"],
+                 "archetype": e["result"]["archetype"]["label"], "not_measurable": e["result"]["na_dims"],
+                 "real_prompts": len(e["corpus"].real_prompts)} for e in entries]}, indent=2))
+            return 0
+        html_doc = build_combined_html(entries, analysis)
+        out_path = os.path.abspath(args.out)
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(html_doc)
+        print(f"\n  Analyzed {len(entries)} source(s): "
+              + ", ".join(f"{e['source']} {e['result']['overall']}/100" for e in entries))
+        print(f"  Report: {out_path}\n")
+        if not args.no_open:
+            try:
+                webbrowser.open(f"file://{out_path}")
+            except Exception:
+                pass
         return 0
 
     # Single source: explicit, or auto-detect (a positional path defaults to Claude Code's format).

@@ -48,16 +48,21 @@ direction on top — and never change the math.
 
 ### 🧠 The deep analysis pipeline (`/ai-fluency`)
 
-One command inside Claude Code runs three local stages:
+One command inside Claude Code runs three local stages **across every coding agent on your
+machine** and produces a single **Platzi-branded** report with the skill map embedded:
 
-1. **Measure** — `insight.py` writes the report + a de-contaminated evidence bundle.
-2. **Explore (Sonnet 4.6)** — four parallel explorers, one per AI-fluency competency.
-3. **Analyze (Opus 4.8)** — a senior assessor writes the skill map grounded in
-   [`reference/ai-fluency-framework.md`](reference/ai-fluency-framework.md), then a
-   verifier checks every claim is grounded in your evidence and repairs it if not.
+1. **Measure** — `insight.py --source all` writes a combined report + one de-contaminated
+   evidence bundle per detected source (Claude Code, Claude Desktop, Codex CLI, Cursor).
+2. **Explore (Sonnet 4.6)** — four parallel explorers, one per AI-fluency competency, reading
+   the evidence across all sources.
+3. **Analyze (Opus 4.8)** — a senior assessor writes ONE cross-tool skill map grounded in
+   [`reference/ai-fluency-framework.md`](reference/ai-fluency-framework.md), then a verifier
+   checks every claim is grounded in your evidence and repairs it if not.
 
 It uses your existing Claude Code session — **no separate API key**. Model choice is
 baked into the workflow ([`.claude/workflows/ai-fluency.js`](.claude/workflows/ai-fluency.js)).
+The plain `python3 insight.py --source all` (no AI) still emits the branded report with the
+deterministic numbers.
 
 ## 🔒 Privacy First
 
