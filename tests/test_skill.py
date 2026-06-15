@@ -25,8 +25,9 @@ class SkillFilesTests(unittest.TestCase):
         fm = match.group(1)
         self.assertRegex(fm, r"(?m)^name:\s*ai-fluency\s*$")
         self.assertRegex(fm, r"(?m)^description:\s*\S")
-        # The collector the skill body invokes must actually exist.
-        self.assertIn("collect.py", text)
+        # The v2 engine the skill body invokes must actually exist.
+        self.assertIn("insight.py", text)
+        self.assertTrue((REPO_ROOT / "insight.py").exists())
 
 
 class CollectorTests(unittest.TestCase):
