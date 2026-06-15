@@ -1,6 +1,6 @@
 # Claude Insight
 
-A **private, local, AI-powered** analysis tool for your Claude Code sessions. Understand how you build with AI — without your data ever leaving your machine.
+A one-command analysis of how you build with AI. It reads your Claude Code sessions and gives you a fluency score, your builder archetype, a 4-competency skill map, and exactly what to do next — all in one self-contained HTML report.
 
 ## ⚡ Run it in 5 seconds (zero install)
 
@@ -8,8 +8,8 @@ A **private, local, AI-powered** analysis tool for your Claude Code sessions. Un
 curl -fsSL https://raw.githubusercontent.com/Feloguarin/claude-insight/main/insight.py | python3 -
 ```
 
-That's the whole thing. No clone, no pip, no Ollama, no API key, fully offline.
-It reads your local `~/.claude/projects`, writes a deep, kind, self-contained
+That's the whole thing. No clone, no pip, no Ollama, no API key. It reads your local
+`~/.claude/projects`, runs the full analysis, writes a deep, kind, self-contained
 `ai_fluency_report.html`, and opens it in your browser.
 
 > Prefer not to pipe curl into python? Two other one-commands:
@@ -21,7 +21,7 @@ It reads your local `~/.claude/projects`, writes a deep, kind, self-contained
 > # already inside Claude Code? just type:
 > /ai-fluency
 > ```
-> Requires Python 3.8+ (already on macOS/Linux). Never modifies your original transcripts; nothing leaves your machine.
+> Requires Python 3.8+ (already on macOS/Linux). Never modifies your original transcripts.
 
 ## 🚀 What It Does
 
@@ -36,35 +36,17 @@ Claude Insight parses your local Claude Code transcripts and generates:
 
 > **Accuracy first.** Every score is a *rate* over your **real, de-contaminated prompts** pushed through a saturating curve — so using Claude *more* can never raise your score, only using it *better* can. Tool-results, subagent turns, slash-command stubs, injected system text and pasted walls of text are filtered out before anything is scored, and idle time is excluded from "active hours." Thin signals are flagged "low data" and hedged toward neutral instead of faking confidence.
 
-## Two ways to run it
+## One command, the full analysis
 
-| Path | Command | What you get |
-| --- | --- | --- |
-| **Deterministic** (everyone) | `python3 insight.py` | The full numeric report, archetype, skill map, growth levers — zero install, zero AI, fully offline. |
-| **Deep two-model analysis** (in Claude Code) | `/ai-fluency` | Everything above **plus** a skill map written by a two-model pipeline: **Sonnet 4.6 explores** your evidence, **Opus 4.8 analyzes** it against the bundled AI Fluency framework and verifies the result is evidence-grounded. |
+`/ai-fluency` inside Claude Code runs the complete pass in one go:
 
-The numbers are always computed deterministically; the models add judgement and
-direction on top — and never change the math.
+1. **Measure** — `insight.py` de-contaminates and **scrubs** your transcripts and computes every score (rate-based, confidence-hedged, archive-backed so it sees **more than Claude Code's 30-day window**).
+2. **Explore — Sonnet 4.6** — four parallel explorers, one per AI-fluency competency, read your evidence.
+3. **Analyze — Opus 4.8** — a senior assessor writes the skill map grounded in [`reference/ai-fluency-framework.md`](reference/ai-fluency-framework.md), then a verifier checks every claim against your evidence and repairs it if not.
 
-### 🧠 The deep analysis pipeline (`/ai-fluency`)
+You get **one report**: your score and band, your builder archetype, the **Delegation · Description · Discernment · Diligence** skill map, and your highest-leverage moves — what to change, each with real evidence and a copy-paste prompt rewrite. The numbers are always computed deterministically; the models add judgement and direction on top, and never change the math. It runs on your existing Claude Code session — **no separate API key**; models are pinned per stage in [`.claude/workflows/ai-fluency.js`](.claude/workflows/ai-fluency.js).
 
-One command inside Claude Code runs three local stages:
-
-1. **Measure** — `insight.py` writes the report + a de-contaminated evidence bundle.
-2. **Explore (Sonnet 4.6)** — four parallel explorers, one per AI-fluency competency.
-3. **Analyze (Opus 4.8)** — a senior assessor writes the skill map grounded in
-   [`reference/ai-fluency-framework.md`](reference/ai-fluency-framework.md), then a
-   verifier checks every claim is grounded in your evidence and repairs it if not.
-
-It uses your existing Claude Code session — **no separate API key**. Model choice is
-baked into the workflow ([`.claude/workflows/ai-fluency.js`](.claude/workflows/ai-fluency.js)).
-
-## 🔒 Privacy First
-
-- **100% local** — no cloud calls, no uploads, no telemetry; the models run inside your own Claude Code session
-- **Never modifies your transcripts** — the only things written are the report and a local archive copy of your history
-- **Nothing personal in the repo** — the report, the evidence (`.insight/`) and the archive are git-ignored; only code + the framework reference are tracked
-- **Open source** — MIT license, auditable
+Not inside Claude Code? `python3 insight.py` (or the curl one-liner above) produces the same scores, archetype, skill levels and growth levers from the deterministic engine.
 
 ## 🧩 Use it as a Claude Code skill
 

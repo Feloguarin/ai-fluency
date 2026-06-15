@@ -19,8 +19,10 @@ Design principles (see README "Methodology"):
     runtime, formulas are documented, and thin signals are flagged "low data"
     and pulled toward a neutral 50 instead of faking confidence.
 
-Pure Python standard library. No pip, no Ollama, no API key, no network. 100%
-offline; your transcripts never leave your machine. The only thing it writes is
+Pure Python standard library — no pip, no Ollama, no API key. One command runs the
+whole pass: de-contaminate and scrub your transcripts, score them, and (as
+`/ai-fluency` in Claude Code) write a Sonnet+Opus skill map grounded in the AI
+Fluency framework on top. The only thing it writes is
 the HTML report and a local copy of your transcripts in an archive
 (~/.claude/insight-archive) so history survives Claude Code's 30-day cleanup —
 pass --no-archive to skip that and read your transcripts without copying them.
@@ -295,6 +297,22 @@ def _denamespace_tool(name):
         parts = name.split("__")
         return parts[-1] if parts else name
     return name
+
+
+# Redact machine-identifying home paths from free text before it is shown in the report or
+# written to the evidence bundle. Applied only at PRESENTATION, never to the scored corpus,
+# so scores stay byte-identical.
+_HOME_PATH_RE = re.compile(r"(?:/Users/|/home/)[^/\s]+")
+_WIN_HOME_RE = re.compile(r"[A-Za-z]:\\Users\\[^\\\s]+")
+
+
+def _scrub_paths(text):
+    """/Users/<name>/x -> ~/x ; bare /Users/<name> -> ~ ; same for /home/<name> and Windows."""
+    if not isinstance(text, str):
+        return text
+    text = _HOME_PATH_RE.sub("~", text)
+    text = _WIN_HOME_RE.sub("~", text)
+    return text
 
 
 class Corpus:
@@ -608,7 +626,10 @@ def score_iteration(corpus):
     specificity = (sum(1 for x in corr if x["high_info"]) / k) if k else 1.0
     score = 100 * (0.6 * (1 - clamp(rate / CORRECTION_RATE_CEILING, 0, 1)) + 0.4 * specificity)
     low_info = [x for x in corr if not x["high_info"]]
-    detail = {"n": k, "corrections": k, "correction_rate": rate, "specificity": specificity}
+    # Confidence is keyed on prompt count n (the opportunity count), NOT correction count k:
+    # a user with many clean prompts and zero corrections has STRONG evidence of good iteration,
+    # so it must not be shrunk toward 50 as if it were "no data".
+    detail = {"n": n, "corrections": k, "correction_rate": rate, "specificity": specificity}
     return score, detail, low_info[:4]
 
 
@@ -841,10 +862,10 @@ def _shortest_action_prompt(corpus):
 
 
 def build_evidence(corpus, result, cards, archive_info=None):
-    """Serialize a local, de-contaminated EVIDENCE bundle for the optional two-model
-    analysis pipeline (Sonnet 4.6 explores it; Opus 4.8 analyzes it against the bundled
-    AI-fluency framework). It contains your real prompts/behavior — it stays on your
-    machine and is git-ignored. Deterministic (no randomness) so runs are reproducible."""
+    """Serialize a de-contaminated EVIDENCE bundle for the two-model analysis pipeline
+    (Sonnet 4.6 explores it; Opus 4.8 analyzes it against the bundled AI-fluency
+    framework). It contains your real prompts/behavior with home paths scrubbed, and is
+    git-ignored. Deterministic (no randomness) so runs are reproducible."""
     prompts = corpus.real_prompts
     sample, seen = [], set()
 
@@ -853,7 +874,7 @@ def build_evidence(corpus, result, cards, archive_info=None):
         if k in seen:
             return
         seen.add(k)
-        sample.append({"text": p["text"][:600], "project": _project_label(p["project"]),
+        sample.append({"text": _scrub_paths(p["text"][:600]), "project": _project_label(p["project"]),
                        "chars": len(p["text"])})
 
     by_len = sorted(prompts, key=lambda p: len(p["text"]))
@@ -874,7 +895,7 @@ def build_evidence(corpus, result, cards, archive_info=None):
                 continue
             c = {}
             if e.get("text"):
-                c["text"] = str(e["text"])[:300]
+                c["text"] = _scrub_paths(str(e["text"])[:300])
             if e.get("file"):
                 c["file"] = os.path.basename(str(e["file"]))
             if e.get("files"):
@@ -919,7 +940,7 @@ def build_evidence(corpus, result, cards, archive_info=None):
 
 
 def _analysis_section_html(analysis):
-    """Render the optional AI-authored skill map (produced by the Opus analysis stage,
+    """Render the AI-authored skill map (produced by the Opus analysis stage,
     grounded in reference/ai-fluency-framework.md). Falls back to nothing if absent."""
     if not analysis or not isinstance(analysis, dict):
         return ""
@@ -928,6 +949,8 @@ def _analysis_section_html(analysis):
     if read:
         parts.append(f'<p class="assess">{_esc(read)}</p>')
     for s in analysis.get("skill_map") or []:
+        if not isinstance(s, dict):
+            continue
         comp = _esc(s.get("competency", "?"))
         lvl = s.get("level", "?")
         label = _esc(s.get("level_label", ""))
@@ -961,10 +984,13 @@ def _project_label(name):
     """Claude encodes an absolute path with '-' for '/', so we can't perfectly
     recover hyphenated names. Drop the home/boilerplate prefix and show the rest.
     '-Users-me-Dropbox-AI-platzi-executive-assistant' -> 'AI platzi executive assistant'."""
-    s = re.sub(r"^-?Users-[^-]+-", "", name)   # strip -Users-<user>-
-    s = re.sub(r"^Dropbox-", "", s)            # strip a common cloud-folder prefix
+    s = re.sub(r"^-?(?:Users|home)-[^-]+(?:-|$)", "", name)  # strip -Users-/-home-<user>- (mac & linux)
+    s = re.sub(r"^Dropbox-", "", s)                          # strip a common cloud-folder prefix
     s = s.replace("-", " ").strip()
-    return s or name
+    # Nothing left -> the session ran in $HOME itself; never echo the raw name (it holds the username).
+    if not s:
+        return "home" if re.match(r"^-?(?:Users|home)-", name) else name
+    return s
 
 
 def terminal_summary(corpus, result):
@@ -1152,7 +1178,7 @@ def build_html(corpus, result, cards, strength, archive_info=None, analysis=None
         proj_counts = Counter(p["project"] for p in corpus.real_prompts)
         for e in ev[:3]:
             if name == "Direction" or name == "Iteration":
-                proj = e["project"]; txt = e["text"]
+                proj = e["project"]; txt = _scrub_paths(e["text"])
                 small = " <em>(illustrative, small sample)</em>" if proj_counts.get(proj, 0) < 10 else ""
                 items += f'<li>“{_esc(txt[:140])}” <span class="loc">— {_esc(_project_label(proj))}{small}</span></li>'
             elif name == "Context":
@@ -1369,7 +1395,7 @@ code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
   <div class="honesty">
     <b>The honest part:</b> we found {corpus.user_records:,} “user” records but only <b>{len(corpus.real_prompts)}</b> are prompts <b>you</b> typed. We filtered out {filtered_total:,} that the old tool wrongly counted:
     <ul>{filt}</ul>
-    <p style="color:var(--mut);font-size:13px;margin-top:10px">Your real prompts: median {d.get('median_chars','?')} chars · {d.get('under_80_pct','?')}% under 80 chars · {active_h:.0f} h hands-on active time (idle gaps over 5 min are excluded — not raw wall-clock). Analyzed 100% on your machine; nothing was uploaded.</p>
+    <p style="color:var(--mut);font-size:13px;margin-top:10px">Your real prompts: median {d.get('median_chars','?')} chars · {d.get('under_80_pct','?')}% under 80 chars · {active_h:.0f} h hands-on active time (idle gaps over 5 min are excluded — not raw wall-clock).</p>
   </div>
 </section>
 
@@ -1556,6 +1582,7 @@ def main(argv=None):
     # Render fully before touching the file, so a render error can't leave a 0-byte report.
     html_doc = build_html(corpus, result, cards, strength, archive_info, analysis)
     out_path = os.path.abspath(args.out)
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html_doc)
 

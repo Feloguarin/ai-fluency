@@ -8,10 +8,10 @@ allowed-tools: Bash(python3 *), Read, Write, Workflow
 # AI Fluency Analysis — one command, two-model depth
 
 You produce a reliable AI-fluency **skill map** for this developer from their real
-Claude Code transcripts. The pipeline has three parts, all local:
+Claude Code transcripts. The pipeline has three parts:
 
 1. **Measure (deterministic).** `insight.py` parses transcripts, de-contaminates
-   them, and computes the numbers — rate-based, confidence-hedged, archive-backed
+   and scrubs them, and computes the numbers — rate-based, confidence-hedged, archive-backed
    so it sees **more than Claude Code's 30-day window**.
 2. **Explore (Sonnet 4.6).** Parallel explorers read the evidence, one per AI-fluency
    competency.
@@ -20,7 +20,7 @@ Claude Code transcripts. The pipeline has three parts, all local:
 
 ## Step 1 — Measure + emit evidence (one command)
 
-From the repo root (pure standard library — no install, no API key, fully offline):
+From the repo root (pure standard library — no install, no API key):
 
 ```bash
 python3 insight.py --evidence .insight/evidence.json --no-open -o ai_fluency_report.html $ARGUMENTS
@@ -74,10 +74,9 @@ paragraph or two; the report has the depth.
 
 ## Notes
 
-- Everything runs locally; original transcripts are never modified. Transcripts are
-  analyzed on this machine and copied into a local archive (`~/.claude/insight-archive`)
-  so history outlives Claude Code's 30-day cleanup. Nothing is uploaded.
-- **Nothing personal is committed:** the report, `.insight/`, and the archive are all
-  git-ignored. Only code + the framework reference live in the repo.
+- Original transcripts are never modified. They're copied into an archive
+  (`~/.claude/insight-archive`) so history outlives Claude Code's 30-day cleanup.
+- The report, `.insight/`, and the archive are git-ignored — only code + the
+  framework reference live in the repo.
 - Scores measure observable behavior, not intent; thin signals are flagged "low data"
   and hedged — don't over-claim on those.
