@@ -34,8 +34,10 @@ import math
 import os
 import re
 import shutil
+import sqlite3
 import statistics
 import sys
+import tempfile
 import webbrowser
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -306,6 +308,7 @@ class Corpus:
         self.total_bytes = 0
         self.user_records = 0
         self.filtered = Counter()       # why user records were not counted as prompts
+        self.signals = Counter()        # source-specific scrutiny signals (e.g. permission_denials)
         self.real_prompts = []          # list of dicts: text, project, session, idx
         self.tool_usage = Counter()     # de-namespaced tool name -> count
         self.total_tool_calls = 0
@@ -417,24 +420,110 @@ def archive_transcripts(live_files, archive_dir):
     return new, updated
 
 
-def parse(files):
-    c = Corpus()
-    c.files = len(files)
-    for path in files:
+# --------------------------------------------------------------------------- #
+# Source adapters
+# --------------------------------------------------------------------------- #
+#
+# Every supported coding-agent tool plugs in as a SourceAdapter. An adapter's only
+# job is to turn one tool's local logs into the normalized event stream that the
+# generic `parse()` below consumes — after which scoring, the evidence bundle, the
+# archive and the Sonnet->Opus analysis pipeline are entirely source-agnostic.
+#
+# iter_events(path) yields, in order, dicts of these shapes:
+#   {"role": "session", "project": str, "session_id": str}   one header per file, first
+#   {"role": "ts",      "ts": <iso str>}                     a timestamp (active-time only)
+#   {"role": "user",    "text": str}                         a de-contaminated human prompt
+#   {"role": "tool",    "name": str, "file": path|None,      an agent tool call; `name` is
+#                       "cmd": str|None, "meta": {...}}        de-namespaced (case preserved for
+#                                                              tool_usage); parse lowercases it
+#                                                              for the canonical vocabulary
+#   {"role": "drop",    "reason": str}                       a candidate prompt that was filtered
+#
+# Mapping `name` onto the canonical vocabulary (read/grep/glob, edit/write/multiedit/
+# notebookedit, bash, agent/task/workflow/enter|exitplanmode) is what makes every scorer
+# "just work". `meta` carries source extras (e.g. {"background": True} for a backgrounded
+# shell -> a delegation signal; {"denied": True}, {"decision": "rejected"} for scrutiny).
+# De-contamination happens inside iter_events: only real human prompts are emitted as
+# `user`; everything filtered is emitted as `drop` with a reason (rolled into corpus.filtered).
+
+
+def _normalize_path(p):
+    """Strip machine-identifying home prefixes so nothing personal leaks into the evidence
+    bundle/report. Handles a home path WITH or WITHOUT a trailing child segment:
+    /Users/<name>/x -> ~/x, and bare /Users/<name> -> ~ (else basename would surface the username)."""
+    if not p or not isinstance(p, str):
+        return p
+    p = re.sub(r"^(?:/Users/|/home/)[^/]+(?=/|$)", "~", p)
+    p = re.sub(r"^[A-Za-z]:\\Users\\[^\\]+(?=\\|$)", "~", p)
+    return p
+
+
+# Match a home path's username segment (with OR without a trailing child); replacing the whole
+# match with "~" turns /Users/jane/proj -> ~/proj and bare /Users/jane -> ~.
+_HOME_PATH_RE = re.compile(r"(?:/Users/|/home/)[^/\s]+")
+_WIN_HOME_RE = re.compile(r"[A-Za-z]:\\Users\\[^\\\s]+")
+# Shell-prompt user@host tokens (pasted terminal sessions leak the OS username + hostname).
+# Also redacts e-mail-shaped tokens — fine for a privacy tool; the analysis doesn't need them.
+_USER_AT_HOST_RE = re.compile(r"\b[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\b")
+
+
+def _scrub_paths(text):
+    """Redact machine-identifying personal data (home paths + user@host tokens) anywhere in free
+    text. Applied only at PRESENTATION (build_evidence/build_html), never to the scored corpus, so
+    scores stay byte-identical. /Users/<name>/x -> ~/x ; bare /Users/<name> -> ~ ; user@host -> <user>@<host>."""
+    if not isinstance(text, str):
+        return text
+    text = _HOME_PATH_RE.sub("~", text)
+    text = _WIN_HOME_RE.sub("~", text)
+    text = _USER_AT_HOST_RE.sub("<user>@<host>", text)
+    return text
+
+
+def _claude_tool_event(b):
+    """Map one Claude-style tool_use block to a normalized tool event. Shared by the Claude
+    Code and Claude Desktop adapters (identical message shape). `name` keeps its de-namespaced
+    case for tool_usage; parse() lowercases it for the canonical vocabulary. mcp__workspace__bash
+    de-namespaces to 'bash' and so its input.command is picked up as a shell command for free."""
+    raw = b.get("name", "unknown")
+    name = _denamespace_tool(raw)
+    inp = b.get("input", {}) if isinstance(b.get("input"), dict) else {}
+    fpath = inp.get("file_path") or inp.get("path") or inp.get("notebook_path")
+    cmd = inp.get("command") if name.lower() == "bash" else None
+    meta = {}
+    if name.lower() == "bash" and inp.get("run_in_background"):
+        meta["background"] = True
+    return {"role": "tool", "name": name, "file": fpath, "cmd": cmd, "meta": meta}
+
+
+class ClaudeCodeAdapter:
+    """Claude Code — ~/.claude/projects/**/*.jsonl. The original (and reference) source."""
+
+    name = "claude-code"
+    archive_enabled = True
+    capabilities = {"prompts": True, "edits": True, "verify": True,
+                    "reads": True, "delegation": True}
+
+    @staticmethod
+    def detect():
+        if os.environ.get("CLAUDE_PROJECTS_DIR"):
+            return True
+        return any(os.path.isdir(os.path.expanduser(d)) for d in DEFAULT_DIRS)
+
+    @staticmethod
+    def discover(explicit):
+        return discover_files(explicit)
+
+    @staticmethod
+    def iter_events(path):
+        # The header carries the project (parent-dir name) and session id (filename) and is
+        # yielded before opening the file, so even an unreadable file still registers its project.
         project = os.path.basename(os.path.dirname(path)) or "default"
-        c.projects.add(project)
-        try:
-            c.total_bytes += os.path.getsize(path)
-        except OSError:
-            pass
         session_id = os.path.splitext(os.path.basename(path))[0]
-        timeline = []
-        ts_in_file = []
-        prompt_idx = 0
+        yield {"role": "session", "project": project, "session_id": session_id}
         try:
             fh = open(path, encoding="utf-8")
         except OSError:
-            continue
+            return
         with fh:
             for line in fh:
                 line = line.strip()
@@ -444,11 +533,9 @@ def parse(files):
                     e = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                ts = _parse_ts(e.get("timestamp"))
-                if ts:
-                    ts_in_file.append(ts)
-                    c.first_ts = ts if c.first_ts is None or ts < c.first_ts else c.first_ts
-                    c.last_ts = ts if c.last_ts is None or ts > c.last_ts else c.last_ts
+                ts = e.get("timestamp")
+                if ts is not None:
+                    yield {"role": "ts", "ts": ts}
                 msg = e.get("message") if isinstance(e.get("message"), dict) else {}
                 role = e.get("role") or msg.get("role") or e.get("type")
                 content = msg.get("content", e.get("content"))
@@ -457,56 +544,636 @@ def parse(files):
                     if isinstance(content, list):
                         for b in content:
                             if isinstance(b, dict) and b.get("type") == "tool_use":
-                                raw = b.get("name", "unknown")
-                                name = _denamespace_tool(raw)
-                                c.tool_usage[name] += 1
-                                c.total_tool_calls += 1
-                                inp = b.get("input", {}) if isinstance(b.get("input"), dict) else {}
-                                if name.lower() in DELEGATION_TOOLS:
-                                    c.delegation_events += 1
-                                if name.lower() == "bash" and inp.get("run_in_background"):
-                                    c.delegation_events += 1
-                                fpath = inp.get("file_path") or inp.get("path") or inp.get("notebook_path")
-                                cmd = inp.get("command") if name.lower() == "bash" else None
-                                timeline.append({
-                                    "kind": "tool", "name": name.lower(),
-                                    "file": fpath, "cmd": cmd,
-                                })
+                                yield _claude_tool_event(b)
                     continue
 
                 if role != "user":
                     continue
-                c.user_records += 1
                 if _is_tool_result(content):
-                    c.filtered["tool results"] += 1
+                    yield {"role": "drop", "reason": "tool results"}
                     continue
                 if e.get("isSidechain") is True:
-                    c.filtered["subagent turns"] += 1
+                    yield {"role": "drop", "reason": "subagent turns"}
                     continue
                 if e.get("isMeta") is True:
-                    c.filtered["meta-injected"] += 1
+                    yield {"role": "drop", "reason": "meta-injected"}
                     continue
                 text = _text_of(content).strip()
                 if not text:
-                    c.filtered["empty"] += 1
+                    yield {"role": "drop", "reason": "empty"}
                     continue
                 if _looks_injected(text):
-                    c.filtered["injected / pasted"] += 1
+                    yield {"role": "drop", "reason": "injected / pasted"}
                     continue
-                # A genuine, human-typed prompt.
-                prompt_idx += 1
-                rec = {"text": text, "project": project, "session": session_id, "idx": prompt_idx}
-                c.real_prompts.append(rec)
-                timeline.append({"kind": "prompt", "text": text, "rec": rec})
+                yield {"role": "user", "text": text}
 
-        if len(ts_in_file) >= 2:
-            ts_in_file.sort()
+
+# --- Claude Desktop (agent mode / "Cowork") ------------------------------------------------ #
+
+_DESKTOP_ROOT = "~/Library/Application Support/Claude/local-agent-mode-sessions"
+_UPLOADED_RE = re.compile(r"<uploaded_files>.*?</uploaded_files>", re.S)
+
+
+def _strip_uploaded_files(text):
+    if not text:
+        return text
+    return _UPLOADED_RE.sub("", text)
+
+
+class ClaudeDesktopAdapter:
+    """Claude Desktop agent-mode sessions — .../local-agent-mode-sessions/**/audit.jsonl.
+    The records share Claude Code's message/tool_use shape, so tool extraction is reused; the
+    differences are the harness envelopes (system/result/rate_limit/tool_use_summary), the
+    isReplay/isSynthetic de-contamination, and the real shell tool being mcp__workspace__bash
+    (which de-namespaces to 'bash')."""
+
+    name = "claude-desktop"
+    archive_enabled = False   # every file is named audit.jsonl -> basename-keyed archive can't dedupe it
+    capabilities = {"prompts": True, "edits": True, "verify": True,
+                    "reads": True, "delegation": True}
+
+    @staticmethod
+    def detect():
+        return os.path.isdir(os.path.expanduser(_DESKTOP_ROOT))
+
+    @staticmethod
+    def discover(explicit):
+        if explicit:
+            p = os.path.expanduser(explicit)
+            if os.path.isfile(p) and p.endswith(".jsonl"):
+                return [p]
+            if os.path.isdir(p):
+                return sorted(glob.glob(os.path.join(p, "**", "audit.jsonl"), recursive=True))
+            return []
+        root = os.path.expanduser(_DESKTOP_ROOT)
+        if not os.path.isdir(root):
+            return []
+        return sorted(glob.glob(os.path.join(root, "**", "audit.jsonl"), recursive=True))
+
+    @staticmethod
+    def iter_events(path):
+        # One audit.jsonl == one session. The session id is the per-session directory name
+        # (globally unique); project is just the source (desktop agent mode has no project tree).
+        session_id = os.path.basename(os.path.dirname(path)) or os.path.splitext(os.path.basename(path))[0]
+        yield {"role": "session", "project": "claude-desktop", "session_id": session_id}
+        try:
+            fh = open(path, encoding="utf-8")
+        except OSError:
+            return
+        with fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = e.get("timestamp") or e.get("_audit_timestamp")
+                if ts is not None:
+                    yield {"role": "ts", "ts": ts}
+                typ = e.get("type")
+                if typ == "result":
+                    pd = e.get("permission_denials")
+                    if isinstance(pd, list) and pd:
+                        # user scrutiny of agent actions — a Discernment signal
+                        yield {"role": "signal", "name": "permission_denials", "value": len(pd)}
+                    continue
+                if typ in ("system", "rate_limit_event", "tool_use_summary"):
+                    continue  # init/status/permission envelopes & summaries — never prompts/actions
+                msg = e.get("message") if isinstance(e.get("message"), dict) else {}
+                role = msg.get("role") or typ
+                content = msg.get("content")
+
+                if role == "assistant":
+                    if isinstance(content, list):
+                        for b in content:
+                            if isinstance(b, dict) and b.get("type") == "tool_use":
+                                yield _claude_tool_event(b)
+                    continue
+
+                if role != "user":
+                    continue
+                if _is_tool_result(content) or e.get("tool_use_result") is not None:
+                    yield {"role": "drop", "reason": "tool results"}
+                    continue
+                if e.get("isReplay"):
+                    yield {"role": "drop", "reason": "replays"}
+                    continue
+                if e.get("isSynthetic"):
+                    yield {"role": "drop", "reason": "meta-injected"}
+                    continue
+                if e.get("isSidechain") or e.get("parent_tool_use_id") or e.get("subagent_type"):
+                    yield {"role": "drop", "reason": "subagent turns"}
+                    continue
+                text = _strip_uploaded_files(_text_of(content)).strip()
+                if not text:
+                    yield {"role": "drop", "reason": "empty"}
+                    continue
+                if _looks_injected(text):
+                    yield {"role": "drop", "reason": "injected / pasted"}
+                    continue
+                yield {"role": "user", "text": text}
+
+
+# --- OpenAI Codex CLI ----------------------------------------------------------------------- #
+
+_CODEX_ROOTS = ["~/.codex/sessions", "~/.codex/archived_sessions"]
+# Wrappers the Codex harness injects into otherwise-user-role text (not human-typed).
+_CODEX_INJECT_PREFIXES = ("<environment_context>", "# agents.md instructions for",
+                          "<turn_aborted>", "# in app browser:", "<image")
+
+
+def _codex_args(a):
+    """Codex tool arguments arrive as a JSON-encoded STRING (sometimes already a dict)."""
+    if isinstance(a, dict):
+        return a
+    if isinstance(a, str):
+        try:
+            return json.loads(a)
+        except (ValueError, TypeError):
+            return {}
+    return {}
+
+
+def _codex_message_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(b.get("text", "") for b in content
+                        if isinstance(b, dict) and b.get("type") in ("input_text", "text"))
+    return ""
+
+
+def _codex_is_injected(text):
+    if _looks_injected(text):
+        return True
+    low = text.lstrip().lower()
+    return any(low.startswith(p) for p in _CODEX_INJECT_PREFIXES)
+
+
+def _codex_apply_patch_events(patch):
+    """A unified-diff string -> one edit/write event per file the patch touches."""
+    out = []
+    if not isinstance(patch, str):
+        return out
+    for line in patch.splitlines():
+        s = line.strip()
+        for marker, canon in (("*** Add File:", "write"),
+                              ("*** Update File:", "edit"),
+                              ("*** Delete File:", "edit")):
+            if s.startswith(marker):
+                out.append({"role": "tool", "name": canon,
+                            "file": _normalize_path(s[len(marker):].strip()),
+                            "cmd": None, "meta": {}})
+                break
+    return out
+
+
+def _codex_project(repo, cwd):
+    if isinstance(repo, str) and repo:
+        base = repo.rstrip("/").split("/")[-1]
+        if base.endswith(".git"):
+            base = base[:-4]
+        if base:
+            return base
+    if isinstance(cwd, str) and cwd:
+        return os.path.basename(cwd.rstrip("/")) or "codex"
+    return "codex"
+
+
+def _codex_response_events(payload):
+    """Map one Codex `response_item` payload to a list of normalized events (possibly empty)."""
+    ptype = payload.get("type")
+    if ptype == "message":
+        role = payload.get("role")
+        if role == "user":
+            text = _codex_message_text(payload.get("content")).strip()
+            if not text:
+                return [{"role": "drop", "reason": "empty"}]
+            if _codex_is_injected(text):
+                return [{"role": "drop", "reason": "injected / pasted"}]
+            return [{"role": "user", "text": text}]
+        if role in ("developer", "system"):
+            return [{"role": "drop", "reason": "system"}]   # harness/system prose; counted for transparency
+        return []   # assistant prose -> skipped (not a prompt, not an action)
+    if ptype == "function_call":
+        name = (payload.get("name") or "").strip()
+        args = _codex_args(payload.get("arguments"))
+        if name == "exec_command":
+            return [{"role": "tool", "name": "bash", "file": None,
+                     "cmd": args.get("cmd") or args.get("command"),
+                     "meta": {"workdir": args.get("workdir")}}]
+        if name == "update_plan":
+            return [{"role": "tool", "name": "enterplanmode", "file": None, "cmd": None, "meta": {}}]
+        if name:
+            fpath = _normalize_path(args.get("path")) if isinstance(args, dict) else None
+            return [{"role": "tool", "name": name.lower(), "file": fpath, "cmd": None, "meta": {}}]
+        return []
+    if ptype == "custom_tool_call":
+        name = (payload.get("name") or "").strip()
+        if name == "apply_patch":
+            return _codex_apply_patch_events(payload.get("input", ""))
+        if name:
+            return [{"role": "tool", "name": name.lower(), "file": None, "cmd": None, "meta": {}}]
+        return []
+    if ptype == "web_search_call":
+        action = payload.get("action") if isinstance(payload.get("action"), dict) else {}
+        return [{"role": "tool", "name": "web_search", "file": None, "cmd": None,
+                 "meta": {"query": action.get("query")}}]
+    if ptype == "tool_search_call":
+        return [{"role": "tool", "name": "tool_search", "file": None, "cmd": None, "meta": {}}]
+    if ptype == "image_generation_call":
+        return [{"role": "tool", "name": "image_generation", "file": None, "cmd": None, "meta": {}}]
+    return []   # reasoning / *_output / unknown payloads -> ignored
+
+
+class CodexAdapter:
+    """OpenAI Codex CLI — ~/.codex/sessions/**/rollout-*.jsonl. We read the `response_item`
+    stream only (the `event_msg` stream is parallel telemetry — using both double-counts).
+    `reads` is False: Codex has no read tool (files are read via shell), so read-before-edit
+    grounding (Context) is not reliably observable and is honestly marked not-measurable."""
+
+    name = "codex"
+    archive_enabled = False
+    capabilities = {"prompts": True, "edits": True, "verify": True,
+                    "reads": False, "delegation": True}
+
+    @staticmethod
+    def detect():
+        return any(os.path.isdir(os.path.expanduser(r)) for r in _CODEX_ROOTS)
+
+    @staticmethod
+    def discover(explicit):
+        if explicit:
+            p = os.path.expanduser(explicit)
+            if os.path.isfile(p) and p.endswith(".jsonl"):
+                return [p]
+            if os.path.isdir(p):
+                got = sorted(glob.glob(os.path.join(p, "**", "rollout-*.jsonl"), recursive=True))
+                return got or sorted(glob.glob(os.path.join(p, "**", "*.jsonl"), recursive=True))
+            return []
+        files = []
+        for r in _CODEX_ROOTS:
+            rp = os.path.expanduser(r)
+            if os.path.isdir(rp):
+                files.extend(glob.glob(os.path.join(rp, "**", "rollout-*.jsonl"), recursive=True))
+        return sorted(set(files))
+
+    @staticmethod
+    def iter_events(path):
+        session_id = os.path.splitext(os.path.basename(path))[0]
+        header = None
+        pending = []   # events seen before session_meta is known -> attributed to the real session
+
+        try:
+            fh = open(path, encoding="utf-8")
+        except OSError:
+            yield {"role": "session", "project": "codex", "session_id": session_id}
+            return
+        with fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                typ = e.get("type")
+                payload = e.get("payload") if isinstance(e.get("payload"), dict) else {}
+                ts = e.get("timestamp")
+
+                if typ == "session_meta":
+                    git = payload.get("git") if isinstance(payload.get("git"), dict) else {}
+                    repo = git.get("repository_url") if git else None
+                    header = {"role": "session",
+                              "project": _codex_project(repo, payload.get("cwd")),
+                              "session_id": payload.get("id") or session_id}
+                    yield header
+                    if ts is not None:
+                        yield {"role": "ts", "ts": ts}
+                    for ev in pending:     # records seen before the header belong to this session
+                        yield ev
+                    pending = []
+                    continue
+
+                evs = []
+                if ts is not None:
+                    evs.append({"role": "ts", "ts": ts})
+                if typ == "response_item":
+                    evs.extend(_codex_response_events(payload))
+                # turn_context / event_msg / compacted contribute only their timestamp (active time)
+                if header is None:
+                    pending.extend(evs)
+                else:
+                    for ev in evs:
+                        yield ev
+        if header is None:
+            # no session_meta anywhere -> fall back to a default header, then the buffered events
+            yield {"role": "session", "project": "codex", "session_id": session_id}
+            for ev in pending:
+                yield ev
+
+
+# --- Cursor IDE ----------------------------------------------------------------------------- #
+
+_CURSOR_GLOBAL = "~/Library/Application Support/Cursor/User/globalStorage/state.vscdb"
+_CURSOR_WORKSPACES = "~/Library/Application Support/Cursor/User/workspaceStorage"
+# Linux:   ~/.config/Cursor/User/{globalStorage,workspaceStorage}/...
+# Windows: %APPDATA%\Cursor\User\{globalStorage,workspaceStorage}\...
+
+
+class CursorAdapter:
+    """Cursor IDE — SQLite state.vscdb. The global DB's cursorDiskKV table holds composer
+    sessions (composerData:<id>) and messages (bubbleId:<composerId>:<bubbleId>); older
+    per-workspace DBs use ItemTable/aiService.*. The live DB can be tens of GB and WAL-mode
+    while Cursor is open, so we COPY it first and open the copy strictly read-only."""
+
+    name = "cursor"
+    archive_enabled = False
+    capabilities = {"prompts": True, "edits": True, "verify": True,
+                    "reads": True, "delegation": True}
+
+    @staticmethod
+    def detect():
+        if os.path.exists(os.path.expanduser(_CURSOR_GLOBAL)):
+            return True
+        ws = os.path.expanduser(_CURSOR_WORKSPACES)
+        return bool(glob.glob(os.path.join(ws, "*", "state.vscdb")))
+
+    @staticmethod
+    def discover(explicit):
+        if explicit:
+            p = os.path.expanduser(explicit)
+            if os.path.isfile(p) and p.endswith(".vscdb"):
+                return [p]
+            if os.path.isdir(p):
+                return sorted(glob.glob(os.path.join(p, "**", "state.vscdb"), recursive=True))
+            return []
+        out = []
+        g = os.path.expanduser(_CURSOR_GLOBAL)
+        if os.path.exists(g):
+            out.append(g)
+        out.extend(sorted(glob.glob(os.path.join(os.path.expanduser(_CURSOR_WORKSPACES),
+                                                  "*", "state.vscdb"))))
+        return out
+
+    @staticmethod
+    def iter_events(path):
+        tmpdir = tempfile.mkdtemp(prefix="insight-cursor-")
+        tmpdb = os.path.join(tmpdir, "state.vscdb")
+        conn = None
+        try:
+            try:
+                shutil.copyfile(path, tmpdb)
+                # The live DB is WAL-mode while Cursor is open: recently-committed rows live in the
+                # -wal sidecar, not the main file. Copy the sidecars too (and DON'T use immutable=1,
+                # which makes SQLite ignore the WAL) so a running Cursor's history is still readable.
+                for sfx in ("-wal", "-shm"):
+                    side = path + sfx
+                    if os.path.exists(side):
+                        try:
+                            shutil.copyfile(side, tmpdb + sfx)
+                        except OSError:
+                            pass
+            except OSError:
+                return
+            try:
+                conn = sqlite3.connect(f"file:{tmpdb}?mode=ro", uri=True)
+            except sqlite3.Error:
+                return
+            try:
+                tables = {r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+            except sqlite3.Error:
+                return
+            if "cursorDiskKV" in tables:
+                yield from CursorAdapter._iter_disk_kv(conn)
+            elif "ItemTable" in tables:
+                yield from CursorAdapter._iter_item_table(conn, path)
+        finally:
+            if conn is not None:
+                conn.close()
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    @staticmethod
+    def _iter_disk_kv(conn):
+        # Stream the composer rows lazily (the DB can be tens of GB — don't fetchall); the per-bubble
+        # lookups run on a SECOND cursor so they don't reset the outer result set mid-iteration.
+        outer = conn.cursor()
+        inner = conn.cursor()
+        try:
+            outer.execute("SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'")
+        except sqlite3.Error:
+            return
+        while True:
+            try:
+                row = outer.fetchone()
+            except sqlite3.Error:
+                return
+            if row is None:
+                break
+            key, value = row
+            try:
+                data = json.loads(value)
+            except (ValueError, TypeError):
+                continue
+            composer_id = key.split(":", 1)[1] if ":" in key else key
+            yield {"role": "session", "project": "cursor", "session_id": composer_id}
+            headers = data.get("fullConversationHeadersOnly") or data.get("conversation") or []
+            bubble_ids = [h["bubbleId"] for h in headers
+                          if isinstance(h, dict) and h.get("bubbleId")] if isinstance(headers, list) else []
+            if not bubble_ids:
+                try:
+                    brows = inner.execute("SELECT key FROM cursorDiskKV WHERE key LIKE ?",
+                                          (f"bubbleId:{composer_id}:%",)).fetchall()
+                    bubble_ids = [k.split(":")[-1] for (k,) in brows]
+                except sqlite3.Error:
+                    bubble_ids = []
+            for bid in bubble_ids:
+                try:
+                    brow = inner.execute("SELECT value FROM cursorDiskKV WHERE key = ? LIMIT 1",
+                                         (f"bubbleId:{composer_id}:{bid}",)).fetchone()
+                except sqlite3.Error:
+                    continue
+                if not brow:
+                    continue
+                try:
+                    bubble = json.loads(brow[0])
+                except (ValueError, TypeError):
+                    continue
+                yield from CursorAdapter._bubble_events(bubble)
+
+    @staticmethod
+    def _iter_item_table(conn, path):
+        sid = os.path.basename(os.path.dirname(path)) or "cursor-workspace"
+        yield {"role": "session", "project": "cursor", "session_id": sid}
+        try:
+            row = conn.execute(
+                "SELECT value FROM ItemTable WHERE key = 'aiService.prompts' LIMIT 1").fetchone()
+        except sqlite3.Error:
+            return
+        if not row:
+            return
+        try:
+            prompts = json.loads(row[0])
+        except (ValueError, TypeError):
+            return
+        if not isinstance(prompts, list):
+            return
+        for p in prompts:
+            text = (p.get("text") if isinstance(p, dict) else str(p)) or ""
+            text = text.strip()
+            if not text:
+                continue
+            if _looks_injected(text):
+                yield {"role": "drop", "reason": "injected / pasted"}
+                continue
+            yield {"role": "user", "text": text}
+
+    @staticmethod
+    def _bubble_events(bubble):
+        if not isinstance(bubble, dict):
+            return
+        if bubble.get("type") == 1:   # user message
+            text = (bubble.get("text") or "").strip()
+            if not text:
+                return
+            if _looks_injected(text):
+                yield {"role": "drop", "reason": "injected / pasted"}
+                return
+            yield {"role": "user", "text": text}
+            return
+        tfd = bubble.get("toolFormerData")
+        if isinstance(tfd, dict):
+            canon, fpath, cmd = CursorAdapter._map_tool(tfd.get("name") or tfd.get("toolName") or "", tfd)
+            meta = {}
+            decision = tfd.get("userDecision")
+            if decision:
+                meta["decision"] = decision
+            yield {"role": "tool", "name": canon, "file": fpath, "cmd": cmd, "meta": meta}
+            if decision == "rejected":
+                yield {"role": "signal", "name": "tool_rejections", "value": 1}
+
+    @staticmethod
+    def _map_tool(name, tfd):
+        n = (name or "").lower()
+        params = tfd.get("params") or tfd.get("rawArgs") or {}
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except (ValueError, TypeError):
+                params = {}
+        if not isinstance(params, dict):
+            params = {}
+        f = params.get("target_file") or params.get("path") or params.get("file_path")
+        if n in ("run_terminal_cmd", "run_terminal_command", "terminal"):
+            return "bash", None, params.get("command")
+        if n in ("read_file", "read"):
+            return "read", _normalize_path(f), None
+        if n in ("write", "write_file", "create_file"):
+            return "write", _normalize_path(f), None
+        if n in ("edit_file", "apply_diff", "search_replace", "edit", "str_replace", "multi_edit"):
+            return "edit", _normalize_path(f), None
+        return (n or "tool"), _normalize_path(f), None
+
+
+# Registry of available sources. Order matters for auto-detection (claude-code first).
+ADAPTERS = {a.name: a for a in (ClaudeCodeAdapter, ClaudeDesktopAdapter, CodexAdapter, CursorAdapter)}
+
+
+def get_adapter(name):
+    return ADAPTERS.get(name)
+
+
+def detect_adapter():
+    """First source whose data is present on this machine; claude-code wins ties."""
+    for a in ADAPTERS.values():
+        try:
+            if a.detect():
+                return a
+        except Exception:
+            continue
+    return ClaudeCodeAdapter
+
+
+def parse(files, adapter=None):
+    """Build a Corpus from `files` using `adapter` (default: Claude Code). Source-agnostic:
+    it consumes the adapter's normalized event stream and accounts every field the scorers
+    depend on, so adding a source never touches this function or the scorers."""
+    if adapter is None:
+        adapter = ClaudeCodeAdapter
+    c = Corpus()
+    c.files = len(files)
+
+    def _flush(cur):
+        # Gap-capped active time is computed per session window; a new `session` header flushes
+        # the prior one. Single-header sources (Claude Code/Desktop/Codex) flush once at EOF,
+        # so their active time and session map are byte-identical to a per-file computation.
+        ts_in = cur["ts"]
+        if len(ts_in) >= 2:
+            ts_in.sort()
             c.active_seconds += sum(
-                min((ts_in_file[i + 1] - ts_in_file[i]).total_seconds(), GAP_CAP_SECONDS)
-                for i in range(len(ts_in_file) - 1)
+                min((ts_in[i + 1] - ts_in[i]).total_seconds(), GAP_CAP_SECONDS)
+                for i in range(len(ts_in) - 1)
             )
-        if timeline:
-            c.sessions[session_id] = {"project": project, "timeline": timeline}
+        if cur["timeline"]:
+            c.sessions[cur["session_id"]] = {"project": cur["project"], "timeline": cur["timeline"]}
+
+    for path in files:
+        try:
+            c.total_bytes += os.path.getsize(path)
+        except OSError:
+            pass
+        cur = {"project": "default",
+               "session_id": os.path.splitext(os.path.basename(path))[0],
+               "timeline": [], "ts": [], "idx": 0}
+        for ev in adapter.iter_events(path):
+            role = ev.get("role")
+            if role == "session":
+                _flush(cur)
+                cur = {"project": ev.get("project") or "default",
+                       "session_id": ev.get("session_id") or cur["session_id"],
+                       "timeline": [], "ts": [], "idx": 0}
+                c.projects.add(cur["project"])
+                continue
+            if role == "ts":
+                ts = _parse_ts(ev.get("ts"))
+                if ts:
+                    cur["ts"].append(ts)
+                    c.first_ts = ts if c.first_ts is None or ts < c.first_ts else c.first_ts
+                    c.last_ts = ts if c.last_ts is None or ts > c.last_ts else c.last_ts
+                continue
+            if role == "signal":
+                c.signals[ev.get("name", "signal")] += int(ev.get("value", 1) or 0)
+                continue
+            if role == "drop":
+                c.user_records += 1
+                c.filtered[ev.get("reason", "filtered")] += 1
+                continue
+            if role == "user":
+                c.user_records += 1
+                cur["idx"] += 1
+                text = ev.get("text", "")
+                rec = {"text": text, "project": cur["project"],
+                       "session": cur["session_id"], "idx": cur["idx"]}
+                c.real_prompts.append(rec)
+                cur["timeline"].append({"kind": "prompt", "text": text, "rec": rec})
+                continue
+            if role == "tool":
+                name = ev.get("name", "unknown")
+                c.tool_usage[name] += 1
+                c.total_tool_calls += 1
+                lname = name.lower()
+                if lname in DELEGATION_TOOLS:
+                    c.delegation_events += 1
+                if isinstance(ev.get("meta"), dict) and ev["meta"].get("background"):
+                    c.delegation_events += 1
+                cur["timeline"].append({"kind": "tool", "name": lname,
+                                        "file": ev.get("file"), "cmd": ev.get("cmd")})
+                continue
+        _flush(cur)
     return c
 
 
@@ -779,7 +1446,27 @@ def classify_archetype(dim_scores, delegation_score):
 # Analysis orchestration
 # --------------------------------------------------------------------------- #
 
-def analyze(corpus):
+# Which dimensions a source can actually observe. A capability that is False (e.g. Codex has
+# no read tool -> can't observe read-before-edit grounding) makes its dimension *not measurable*;
+# such dimensions are excluded from the overall score (weights renormalized) rather than scored
+# as 0 — honesty over coverage. capabilities=None means "all measurable" (Claude Code default),
+# which leaves the overall score byte-identical to the original single-source engine.
+def _measurable_dims(capabilities):
+    if not capabilities:
+        return list(WEIGHTS)
+    cap = capabilities
+    out = []
+    if cap.get("prompts", True):
+        out += ["Direction", "Iteration"]
+    if cap.get("verify", True) and cap.get("edits", True):
+        out.append("Verification")
+    if cap.get("reads", True) and cap.get("edits", True):
+        out.append("Context")
+    out.append("Toolcraft")  # tool breadth is observable whenever any tool is used
+    return [n for n in WEIGHTS if n in out]   # keep canonical order
+
+
+def analyze(corpus, capabilities=None):
     raw, detail, evidence = {}, {}, {}
     for name, fn in (("Direction", score_direction), ("Verification", score_verification),
                      ("Context", score_context), ("Iteration", score_iteration),
@@ -791,8 +1478,11 @@ def analyze(corpus):
     for name in raw:
         shrunk[name], conf[name] = shrink(raw[name], detail[name].get("n", 0), TARGET_N[name])
 
-    overall_raw = round(sum(WEIGHTS[n] * raw[n] for n in WEIGHTS))
-    overall = round(sum(WEIGHTS[n] * shrunk[n] for n in WEIGHTS))
+    measurable = _measurable_dims(capabilities)
+    na_dims = [n for n in WEIGHTS if n not in measurable]
+    wsum = sum(WEIGHTS[n] for n in measurable) or 1.0
+    overall_raw = round(sum(WEIGHTS[n] * raw[n] for n in measurable) / wsum)
+    overall = round(sum(WEIGHTS[n] * shrunk[n] for n in measurable) / wsum)
     band, band_meaning = band_for(overall)
     # Delegation is a user-driven archetype axis (handoffs per active hour).
     active_hours = max(corpus.active_seconds / 3600, 0.5)
@@ -815,6 +1505,7 @@ def analyze(corpus):
         "raw": raw, "shrunk": shrunk, "conf": conf, "detail": detail, "evidence": evidence,
         "overall_raw": overall_raw, "overall": overall, "band": band, "band_meaning": band_meaning,
         "archetype": archetype, "dist": dist,
+        "measurable": measurable, "na_dims": na_dims,
     }
 
 
@@ -822,16 +1513,17 @@ def build_action_plan(corpus, result):
     """Growth cards ranked by impact = (target - score) * weight. The teaching copy
     comes from SKILL_TEACH; user-specific evidence comes from result['evidence']."""
     TARGET = 85
+    dims = result.get("measurable") or list(WEIGHTS)
     cards = []
-    for name in WEIGHTS:
+    for name in dims:
         score = result["shrunk"][name]
         impact = (TARGET - score) * WEIGHTS[name]
         cards.append({"dim": name, "score": round(score), "impact": impact,
                       "weak": result["evidence"].get(name, []),
                       "detail": result["detail"][name]})
     cards.sort(key=lambda c: c["impact"], reverse=True)
-    # strength callout = highest shrunk score
-    strength = max(WEIGHTS, key=lambda n: result["shrunk"][n])
+    # strength callout = highest shrunk score (among measurable dimensions)
+    strength = max(dims, key=lambda n: result["shrunk"][n])
     return cards, strength
 
 
@@ -840,7 +1532,7 @@ def _shortest_action_prompt(corpus):
     return min(cands, key=len) if cands else None
 
 
-def build_evidence(corpus, result, cards, archive_info=None):
+def build_evidence(corpus, result, cards, archive_info=None, source=None, capabilities=None):
     """Serialize a local, de-contaminated EVIDENCE bundle for the optional two-model
     analysis pipeline (Sonnet 4.6 explores it; Opus 4.8 analyzes it against the bundled
     AI-fluency framework). It contains your real prompts/behavior — it stays on your
@@ -853,7 +1545,7 @@ def build_evidence(corpus, result, cards, archive_info=None):
         if k in seen:
             return
         seen.add(k)
-        sample.append({"text": p["text"][:600], "project": _project_label(p["project"]),
+        sample.append({"text": _scrub_paths(p["text"][:600]), "project": _project_label(p["project"]),
                        "chars": len(p["text"])})
 
     by_len = sorted(prompts, key=lambda p: len(p["text"]))
@@ -874,7 +1566,7 @@ def build_evidence(corpus, result, cards, archive_info=None):
                 continue
             c = {}
             if e.get("text"):
-                c["text"] = str(e["text"])[:300]
+                c["text"] = _scrub_paths(str(e["text"])[:300])
             if e.get("file"):
                 c["file"] = os.path.basename(str(e["file"]))
             if e.get("files"):
@@ -889,13 +1581,18 @@ def build_evidence(corpus, result, cards, archive_info=None):
     a = result["archetype"]
     return {
         "schema": "claude-insight-evidence/1",
+        "source": source or "claude-code",
+        "capabilities": capabilities or {"prompts": True, "edits": True, "verify": True,
+                                         "reads": True, "delegation": True},
+        "not_measurable": result.get("na_dims", []),
         "meta": {
             "sessions": corpus.files, "projects": len(corpus.projects),
             "real_prompts": len(prompts), "user_records": corpus.user_records,
             "filtered_noise": dict(corpus.filtered),
             "span_days": span_days,
             "active_hours": round(corpus.active_seconds / 3600, 1),
-            "archive": archive_info,
+            "archive": ({**archive_info, "dir": _scrub_paths(archive_info["dir"])}
+                        if archive_info else None),
             "prompt_distribution": result["dist"],
         },
         "scores": {
@@ -914,20 +1611,39 @@ def build_evidence(corpus, result, cards, archive_info=None):
             "weak_examples": {c["dim"]: clean_ex(c["weak"]) for c in cards},
             "tool_usage": dict(corpus.tool_usage),
             "delegation_events": corpus.delegation_events,
+            "signals": dict(corpus.signals),
         },
     }
 
 
-def _analysis_section_html(analysis):
+# The engine dimensions that feed each 4D competency (see the framework mapping table). A
+# competency is only suppressed from the AI skill map when ALL its feeder dimensions are
+# not-measurable for the source — so e.g. Codex (only Context N/A) keeps Discernment/Diligence,
+# which are still observable via Verification.
+_COMPETENCY_FEEDERS = {
+    "delegation": {"Direction", "Toolcraft"},
+    "description": {"Direction", "Iteration"},
+    "discernment": {"Verification", "Context", "Iteration"},
+    "diligence": {"Verification", "Context"},
+}
+
+
+def _analysis_section_html(analysis, na_dims=None):
     """Render the optional AI-authored skill map (produced by the Opus analysis stage,
-    grounded in reference/ai-fluency-framework.md). Falls back to nothing if absent."""
+    grounded in reference/ai-fluency-framework.md). Falls back to nothing if absent. Drops any
+    competency whose signals are entirely not-measurable from the source (capability-aware honesty,
+    enforced deterministically rather than relying on the model to omit it)."""
     if not analysis or not isinstance(analysis, dict):
         return ""
+    na = set(na_dims or [])
     parts = ['<section><h3>Skill map — analyzed against the AI Fluency framework</h3>']
     read = analysis.get("overall_read") or analysis.get("summary")
     if read:
         parts.append(f'<p class="assess">{_esc(read)}</p>')
     for s in analysis.get("skill_map") or []:
+        feeders = _COMPETENCY_FEEDERS.get(str(s.get("competency", "")).strip().lower())
+        if feeders and na and feeders <= na:
+            continue   # every signal behind this competency is not-measurable from this source
         comp = _esc(s.get("competency", "?"))
         lvl = s.get("level", "?")
         label = _esc(s.get("level_label", ""))
@@ -961,10 +1677,14 @@ def _project_label(name):
     """Claude encodes an absolute path with '-' for '/', so we can't perfectly
     recover hyphenated names. Drop the home/boilerplate prefix and show the rest.
     '-Users-me-Dropbox-AI-platzi-executive-assistant' -> 'AI platzi executive assistant'."""
-    s = re.sub(r"^-?Users-[^-]+-", "", name)   # strip -Users-<user>-
-    s = re.sub(r"^Dropbox-", "", s)            # strip a common cloud-folder prefix
+    s = re.sub(r"^-?Users-[^-]+(?:-|$)", "", name)   # strip -Users-<user>- (or a bare -Users-<user>)
+    s = re.sub(r"^Dropbox-", "", s)                  # strip a common cloud-folder prefix
     s = s.replace("-", " ").strip()
-    return s or name
+    # If nothing is left, the session ran in $HOME itself ('-Users-<name>') — never echo the raw
+    # name back (it still holds the username); label it neutrally instead.
+    if not s:
+        return "home" if re.match(r"^-?Users-", name) else name
+    return s
 
 
 def terminal_summary(corpus, result):
@@ -1031,7 +1751,7 @@ def build_assessment(corpus, result, cards):
 
     growth = cards[0]["dim"]
     growth_disp = disp(growth)
-    example = _shortest_action_prompt(corpus) or "run it"
+    example = _scrub_paths(_shortest_action_prompt(corpus) or "run it")
     path_why = ARCH_PATHS.get(arch, "Keep building the habits below and your next run will show the gain.")
 
     p1 = (f"You drive Claude like <b>{_esc(a['label'])}</b>. {_esc(a['blurb'])} "
@@ -1051,14 +1771,23 @@ def build_assessment(corpus, result, cards):
     return (f'<p class="assess">{p1}</p><p class="assess">{p2}</p><p class="assess">{p3}</p>')
 
 
-def build_html(corpus, result, cards, strength, archive_info=None, analysis=None):
+_SOURCE_LABELS = {
+    "claude-code": "Claude Code", "claude-desktop": "Claude Desktop (agent mode)",
+    "codex": "OpenAI Codex CLI", "cursor": "Cursor",
+}
+
+
+def build_html(corpus, result, cards, strength, archive_info=None, analysis=None,
+               source=None, capabilities=None):
     a = result["archetype"]
     d = result["dist"]
-    analysis_section = _analysis_section_html(analysis)
+    analysis_section = _analysis_section_html(analysis, result.get("na_dims"))
     days = (corpus.last_ts - corpus.first_ts).days if corpus.first_ts and corpus.last_ts else 0
     active_h = corpus.active_seconds / 3600
     filtered_total = sum(corpus.filtered.values())
     provisional = len(corpus.real_prompts) < PROVISIONAL_MIN_PROMPTS
+    na = [n for n in WEIGHTS if n in set(result.get("na_dims") or [])]
+    src_label = _SOURCE_LABELS.get(source or "claude-code", source or "Claude Code")
 
     DIM_BLURB = {
         "Direction": "How clearly you tell the agent what you want before it acts.",
@@ -1083,9 +1812,9 @@ def build_html(corpus, result, cards, strength, archive_info=None, analysis=None
             return f"{det.get('distinct', 0)} distinct tools, evenness {det.get('evenness', 0.0):.2f}, {det.get('delegation_events', 0)} delegations"
         return ""
 
-    # dimension bars
+    # dimension bars (not-measurable dimensions are excluded from the score and shown as a note)
     dim_html = ""
-    order = sorted(WEIGHTS, key=lambda n: result["shrunk"][n], reverse=True)
+    order = sorted([n for n in WEIGHTS if n not in na], key=lambda n: result["shrunk"][n], reverse=True)
     for name in order:
         sc = round(result["shrunk"][name])
         raw_sc = round(result["raw"][name])
@@ -1105,6 +1834,14 @@ def build_html(corpus, result, cards, strength, archive_info=None, analysis=None
         <p class="rate">{_esc(dim_rate_line(name))}<span class="wt"> · weight {int(WEIGHTS[name]*100)}%</span></p>
       </div>"""
 
+    for name in na:
+        dim_html += f"""
+      <div class="dim" style="opacity:.72">
+        <div class="top"><span class="name">{_esc(disp(name))} <span class="tag ld">not measurable</span></span><span class="sval" style="font-size:14px;color:var(--mut)">N/A</span></div>
+        <p class="def">{_esc(DIM_BLURB[name])}</p>
+        <p class="rate">Not observable from {_esc(src_label)} — this source doesn't emit the needed signal, so it's excluded from the score (the remaining weights are renormalized) rather than guessed at.</p>
+      </div>"""
+
     # archetype affinity
     aff = ""
     for sim, nm in a["all"]:
@@ -1119,12 +1856,13 @@ def build_html(corpus, result, cards, strength, archive_info=None, analysis=None
 
     # Archive stat tile + the "why ~30 days / how to see more" callout.
     archive_tile = retention_note = ""
-    arch_dir_disp = _esc(archive_info["dir"]) if archive_info else _esc(DEFAULT_ARCHIVE_DIR)
+    arch_dir_disp = _esc(_scrub_paths(archive_info["dir"])) if archive_info else _esc(DEFAULT_ARCHIVE_DIR)
     if archive_info:
         archive_tile = (f'<div class="ing"><div class="n">{archive_info["archived_sessions"]:,}</div>'
                         f'<div class="l">sessions in your archive</div></div>')
     # Show the explainer whenever the visible history is short — that's the 30-day cleanup biting.
-    if days <= 32:
+    # (Claude Code only; other sources don't have the same cleanupPeriodDays retention model.)
+    if days <= 32 and (source in (None, "claude-code")):
         grew = ""
         if archive_info and archive_info.get("enabled"):
             grew = (f' This run preserved <b>{archive_info["new"]:,}</b> new session(s) to your '
@@ -1152,7 +1890,7 @@ def build_html(corpus, result, cards, strength, archive_info=None, analysis=None
         proj_counts = Counter(p["project"] for p in corpus.real_prompts)
         for e in ev[:3]:
             if name == "Direction" or name == "Iteration":
-                proj = e["project"]; txt = e["text"]
+                proj = e["project"]; txt = _scrub_paths(e["text"])
                 small = " <em>(illustrative, small sample)</em>" if proj_counts.get(proj, 0) < 10 else ""
                 items += f'<li>“{_esc(txt[:140])}” <span class="loc">— {_esc(_project_label(proj))}{small}</span></li>'
             elif name == "Context":
@@ -1316,7 +2054,7 @@ code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
 <header>
   <div class="kick">Claude Insight · AI Fluency Report</div>
   <h1>How skillfully you build with AI</h1>
-  <p class="sub">A read of how you actually drive Claude Code — measured from your real prompts and Claude's real actions, analyzed entirely on your machine.</p>
+  <p class="sub">A read of how you actually drive {_esc(src_label)} — measured from your real prompts and the agent's real actions, analyzed entirely on your machine.</p>
 </header>
 
 {prov_banner}
@@ -1356,6 +2094,7 @@ code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
 
 <section>
   <h3>How much data this is based on</h3>
+  <p style="color:var(--mut);font-size:14px;margin:-8px 0 14px">Source: <b>{_esc(src_label)}</b>{(' · ' + ', '.join(_esc(disp(n)) for n in na) + ' not measurable from this source (excluded from the score)') if na else ''}</p>
   <div class="ingest">
     <div class="ing"><div class="n">{corpus.files}</div><div class="l">sessions scanned</div></div>
     <div class="ing"><div class="n">{len(corpus.projects)}</div><div class="l">projects</div></div>
@@ -1421,6 +2160,7 @@ def _skill_levels(result):
     def lvl(score):
         return max(1, min(5, int(score // 20) + 1))
     s = result["shrunk"]
+    na = set(result.get("na_dims") or [])
     defs = [
         ("Briefing & specificity", "Direction",
          "name a goal + one anchor (path, constraint, or acceptance test) in most action prompts",
@@ -1450,6 +2190,8 @@ def _skill_levels(result):
     ]
     out = []
     for name, dim, nxt, rub in defs:
+        if dim in na:
+            continue
         L = lvl(s[dim])
         out.append({"name": name, "dim": dim, "level": L, "now": rub[L],
                     "what": SKILL_TEACH[dim]["what_it_is"],
@@ -1461,32 +2203,22 @@ def _skill_levels(result):
 # CLI
 # --------------------------------------------------------------------------- #
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(description="Claude Insight v2 — AI fluency analyzer (one command, zero install).")
-    ap.add_argument("path", nargs="?", help="transcript dir or .jsonl file (default: ~/.claude/projects)")
-    ap.add_argument("-o", "--out", default="ai_fluency_report.html", help="HTML output path")
-    ap.add_argument("--json", action="store_true", help="print raw metrics as JSON and exit")
-    ap.add_argument("--no-open", action="store_true", help="don't auto-open the report in a browser")
-    ap.add_argument("--archive", default=os.environ.get("CLAUDE_INSIGHT_ARCHIVE", DEFAULT_ARCHIVE_DIR),
-                    metavar="DIR",
-                    help="persistent archive that preserves transcripts beyond Claude Code's "
-                         "30-day cleanup so history accumulates (default ~/.claude/insight-archive; "
-                         "point at a Dropbox/iCloud folder to keep it across machines)")
-    ap.add_argument("--no-archive", action="store_true",
-                    help="don't copy this run's transcripts into the archive (still reads an existing one)")
-    ap.add_argument("--evidence", metavar="PATH",
-                    help="write the de-contaminated evidence bundle (JSON) for the two-model "
-                         "analysis pipeline to PATH ('-' for stdout), then continue")
-    ap.add_argument("--analysis", metavar="PATH",
-                    help="merge an AI analysis (JSON from the Opus stage) into the report's skill map")
-    args = ap.parse_args(argv)
+def _source_out_path(out, source):
+    """Per-source report path for --source all: report.html -> report.codex.html."""
+    root, ext = os.path.splitext(out)
+    return f"{root}.{source}{ext or '.html'}"
 
-    files = discover_files(args.path)
 
-    # Default mode: maintain + read the persistent archive so we can analyze more than the
-    # ~30 days Claude Code keeps on disk. Skipped when an explicit path is given.
+def _run_source(adapter, args, out_path, analysis, multi=False):
+    """Full pipeline for ONE source: discover -> (archive) -> parse -> analyze -> render.
+    Returns 0 on a produced report, 1 if there was nothing to analyze."""
+    files = adapter.discover(args.path)
+
+    # Persistent archive (Claude Code only): preserve transcripts past the 30-day cleanup so
+    # history accumulates. Skipped for sources whose logs aren't subject to it, and when an
+    # explicit path is given.
     archive_info = None
-    if not args.path:
+    if adapter.archive_enabled and not args.path:
         archive_dir = os.path.expanduser(args.archive)
         new = updated = 0
         if not args.no_archive:
@@ -1501,30 +2233,98 @@ def main(argv=None):
         files = merged
 
     if not files:
-        where = args.path or "~/.claude/projects"
-        print(f"No Claude Code transcripts found in {where}.\n"
-              f"Point at your transcripts with:  python3 insight.py /path/to/dir", file=sys.stderr)
+        if not multi:
+            where = args.path or f"the {adapter.name} default location"
+            print(f"No {adapter.name} data found in {where}.\n"
+                  f"Point at your logs with:  python3 insight.py --source {adapter.name} /path", file=sys.stderr)
         return 1
 
-    corpus = parse(files)
+    corpus = parse(files, adapter)
     if not corpus.real_prompts:
-        print("Found transcripts but no real human-typed prompts to analyze.", file=sys.stderr)
+        if not multi:
+            print(f"Found {adapter.name} logs but no real human-typed prompts to analyze.", file=sys.stderr)
         return 1
 
-    result = analyze(corpus)
+    result = analyze(corpus, adapter.capabilities)
     cards, strength = build_action_plan(corpus, result)
 
     if args.evidence:
-        bundle = build_evidence(corpus, result, cards, archive_info)
+        bundle = build_evidence(corpus, result, cards, archive_info,
+                                source=adapter.name, capabilities=adapter.capabilities)
         text = json.dumps(bundle, indent=2)
         if args.evidence == "-":
             print(text)
         else:
-            ep = os.path.abspath(args.evidence)
+            ep = os.path.abspath(_source_out_path(args.evidence, adapter.name) if multi else args.evidence)
             os.makedirs(os.path.dirname(ep) or ".", exist_ok=True)
             with open(ep, "w", encoding="utf-8") as f:
                 f.write(text)
             print(f"  Evidence: {ep}", file=sys.stderr)
+
+    if args.json:
+        payload = {
+            "source": adapter.name, "capabilities": adapter.capabilities,
+            "not_measurable": result["na_dims"],
+            "overall": result["overall"], "overall_raw": result["overall_raw"],
+            "band": result["band"], "archetype": result["archetype"]["label"],
+            "dimensions_raw": result["raw"], "dimensions_adjusted": result["shrunk"],
+            "confidence": result["conf"], "detail": result["detail"],
+            "data_ingested": {
+                "files": corpus.files, "projects": len(corpus.projects),
+                "bytes": corpus.total_bytes, "user_records": corpus.user_records,
+                "real_prompts": len(corpus.real_prompts), "filtered": dict(corpus.filtered),
+                "signals": dict(corpus.signals),
+                "active_hours": round(corpus.active_seconds / 3600, 1),
+                "prompt_distribution": result["dist"],
+                "archive": archive_info,
+            },
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    # Render fully before touching the file, so a render error can't leave a 0-byte report.
+    html_doc = build_html(corpus, result, cards, strength, archive_info, analysis,
+                          source=adapter.name, capabilities=adapter.capabilities)
+    out_path = os.path.abspath(out_path)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(html_doc)
+
+    print(terminal_summary(corpus, result))
+    if archive_info and archive_info["enabled"]:
+        print(f"  Archive: {archive_info['merged_sessions']} sessions preserved at "
+              f"{_scrub_paths(archive_info['dir'])} ({archive_info['new']} new, {archive_info['updated']} updated this run).")
+    print(f"  Report ({adapter.name}): {out_path}\n")
+    if not args.no_open:
+        try:
+            webbrowser.open(f"file://{out_path}")
+        except Exception:
+            pass
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Claude Insight v2 — AI fluency analyzer (one command, zero install).")
+    ap.add_argument("path", nargs="?", help="transcript dir / file / SQLite DB (default: the source's standard location)")
+    ap.add_argument("-o", "--out", default="ai_fluency_report.html", help="HTML output path")
+    ap.add_argument("--source", default="auto",
+                    choices=["auto", "all", "claude-code", "claude-desktop", "codex", "cursor"],
+                    help="which coding-agent logs to analyze (default: auto-detect; 'all' = one "
+                         "report per available source)")
+    ap.add_argument("--json", action="store_true", help="print raw metrics as JSON and exit")
+    ap.add_argument("--no-open", action="store_true", help="don't auto-open the report in a browser")
+    ap.add_argument("--archive", default=os.environ.get("CLAUDE_INSIGHT_ARCHIVE", DEFAULT_ARCHIVE_DIR),
+                    metavar="DIR",
+                    help="persistent archive that preserves Claude Code transcripts beyond its "
+                         "30-day cleanup so history accumulates (default ~/.claude/insight-archive; "
+                         "point at a Dropbox/iCloud folder to keep it across machines)")
+    ap.add_argument("--no-archive", action="store_true",
+                    help="don't copy this run's transcripts into the archive (still reads an existing one)")
+    ap.add_argument("--evidence", metavar="PATH",
+                    help="write the de-contaminated evidence bundle (JSON) for the two-model "
+                         "analysis pipeline to PATH ('-' for stdout), then continue")
+    ap.add_argument("--analysis", metavar="PATH",
+                    help="merge an AI analysis (JSON from the Opus stage) into the report's skill map")
+    args = ap.parse_args(argv)
 
     analysis = None
     if args.analysis:
@@ -1535,41 +2335,32 @@ def main(argv=None):
             print(f"Could not read --analysis {args.analysis}: {e}", file=sys.stderr)
             return 1
 
-    if args.json:
-        payload = {
-            "overall": result["overall"], "overall_raw": result["overall_raw"],
-            "band": result["band"], "archetype": result["archetype"]["label"],
-            "dimensions_raw": result["raw"], "dimensions_adjusted": result["shrunk"],
-            "confidence": result["conf"], "detail": result["detail"],
-            "data_ingested": {
-                "files": corpus.files, "projects": len(corpus.projects),
-                "bytes": corpus.total_bytes, "user_records": corpus.user_records,
-                "real_prompts": len(corpus.real_prompts), "filtered": dict(corpus.filtered),
-                "active_hours": round(corpus.active_seconds / 3600, 1),
-                "prompt_distribution": result["dist"],
-                "archive": archive_info,
-            },
-        }
-        print(json.dumps(payload, indent=2))
+    # --source all: one report per source that has data on this machine.
+    if args.source == "all":
+        if args.path:
+            print("--source all reads each source's standard location and can't be combined with an "
+                  "explicit path (a path implies a single source). Pass a specific --source with the path.",
+                  file=sys.stderr)
+            return 2
+        if analysis:
+            print("  Note: --analysis applies to a single source; ignoring it for --source all.", file=sys.stderr)
+        produced = 0
+        for adapter in ADAPTERS.values():
+            if not adapter.detect():
+                continue
+            rc = _run_source(adapter, args, _source_out_path(args.out, adapter.name), None, multi=True)
+            produced += 1 if rc == 0 else 0
+        if not produced:
+            print("No coding-agent logs found for any source on this machine.", file=sys.stderr)
+            return 1
         return 0
 
-    # Render fully before touching the file, so a render error can't leave a 0-byte report.
-    html_doc = build_html(corpus, result, cards, strength, archive_info, analysis)
-    out_path = os.path.abspath(args.out)
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write(html_doc)
-
-    print(terminal_summary(corpus, result))
-    if archive_info and archive_info["enabled"]:
-        print(f"  Archive: {archive_info['merged_sessions']} sessions preserved at "
-              f"{archive_info['dir']} ({archive_info['new']} new, {archive_info['updated']} updated this run).")
-    print(f"  Report: {out_path}\n")
-    if not args.no_open:
-        try:
-            webbrowser.open(f"file://{out_path}")
-        except Exception:
-            pass
-    return 0
+    # Single source: explicit, or auto-detect (a positional path defaults to Claude Code's format).
+    if args.source == "auto":
+        adapter = ADAPTERS["claude-code"] if args.path else detect_adapter()
+    else:
+        adapter = ADAPTERS[args.source]
+    return _run_source(adapter, args, args.out, analysis, multi=False)
 
 
 if __name__ == "__main__":

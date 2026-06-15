@@ -291,12 +291,27 @@ Add fixtures + tests in `tests/` (stdlib `unittest`, matching the existing style
 - Plus the Phase 0 "no behavior change for claude-code" regression test.
 
 **Definition of done:**
-- [ ] Phase 0 refactor merged; all 65 existing tests green, unmodified.
-- [ ] `claude-desktop`, `codex`, `cursor` adapters parse real local data on a dev machine.
-- [ ] `--source {auto,all,…}` works; capability-aware report hedges unmeasurable competencies.
-- [ ] New per-adapter tests green; path-leak test green; single-file + stdlib-only preserved.
-- [ ] README "Two ways to run" table updated to list supported sources; framework appendix added.
-- [ ] Report/evidence/archive still git-ignored; nothing personal committed.
+- [x] Phase 0 refactor done; all existing tests green, unmodified (23 methods → suite now 34).
+- [x] `claude-desktop`, `codex`, `cursor` adapters built; desktop + codex verified on real local data
+      (43 / 41 sessions); cursor validated via a synthetic `state.vscdb` fixture (not installed here).
+- [x] `--source {auto,all,claude-code,claude-desktop,codex,cursor}` works; capability-aware report
+      hedges unmeasurable competencies (Codex → Context N/A, excluded + weights renormalized).
+- [x] New per-adapter tests green; path-leak test green; single-file + stdlib-only preserved.
+- [x] README `--source` table added; framework "signal availability per source" appendix added.
+- [x] Report/evidence/archive still git-ignored; home paths scrubbed from report + evidence.
+
+**Deviations from this plan (intentional, all to satisfy the hard constraints):**
+1. **Evidence schema stayed `claude-insight-evidence/1`** (plan said bump to `/2`). A bump breaks
+   `test_evidence_bundle...` which asserts `== "/1"`, and "tests unmodified" wins. `source`,
+   `capabilities`, `not_measurable`, and `behavior.signals` were added as backward-compatible fields.
+2. **`archive_enabled = False` for claude-desktop too** (plan said keep archiving). Every desktop file
+   is named `audit.jsonl`, but `_dedupe_sessions`/`archive_transcripts` key on basename — archiving
+   would collapse/overwrite all desktop sessions. Only claude-code archives in v1; a path-aware archive
+   key is future work. Codex/Cursor are non-archiving as planned.
+3. **Cursor per-session `isAgentic==False` → Description-only downgrade not implemented.** The source
+   capabilities are static (all measurable); a chat-only composer simply yields prompts and no tool
+   events, so its thin tool/verify signals are handled by the existing confidence-shrinkage ("low data"),
+   not fabricated. Per-session capability downgrade is future work.
 
 ## 11. Risks & explicit DO-NOTs
 - **DO NOT** modify the scorers (`score_*`) or the existing tests' assertions — adapt *into* them.

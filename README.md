@@ -93,6 +93,33 @@ python3 insight.py --archive ~/Dropbox/claude-archive   # keep history in a sync
 python3 insight.py --no-archive          # analyze without copying anything new
 ```
 
+## 🧩 Other coding agents (`--source`)
+
+Claude Insight isn't only for Claude Code. It reads four coding-agent sources through
+pluggable adapters that normalize each tool's local logs into the same scoring engine —
+so the score, skill map, evidence bundle, and AI Fluency analysis all work unchanged.
+
+| Source | `--source` | Where it reads (local, read-only) |
+|---|---|---|
+| **Claude Code** | `claude-code` | `~/.claude/projects/**/*.jsonl` |
+| **Claude Desktop** (agent mode) | `claude-desktop` | `~/Library/Application Support/Claude/local-agent-mode-sessions/**/audit.jsonl` |
+| **OpenAI Codex CLI** | `codex` | `~/.codex/sessions/**/rollout-*.jsonl` |
+| **Cursor** | `cursor` | `…/Cursor/User/globalStorage/state.vscdb` (copied first, opened read-only) |
+
+```bash
+python3 insight.py                       # auto-detect (prefers Claude Code)
+python3 insight.py --source codex        # analyze Codex CLI instead
+python3 insight.py --source all          # one report per source you have on disk
+```
+
+**Honesty over coverage.** If a source can't observe a signal, the dependent competency
+is marked *not measurable* and excluded from the score (the remaining weights are
+renormalized) rather than guessed at — e.g. Codex has no read tool, so *Context-setting*
+(read-before-edit grounding) is shown as N/A for Codex. Each source's report says which
+source it came from; `--source all` produces independent per-source reports (cross-tool
+scores aren't merged, because different tools have different baselines). Absolute home
+paths are scrubbed from everything before it reaches a report or the evidence bundle.
+
 ## ⏳ Analyzing more than 30 days
 
 By default Claude Code **deletes transcripts older than its `cleanupPeriodDays`
