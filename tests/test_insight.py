@@ -431,5 +431,385 @@ class TestPipelineModes(unittest.TestCase):
         self.assertNotIn("analyzed against the AI Fluency framework", html)
 
 
+# --------------------------------------------------------------------------- #
+# Multi-source adapters
+# --------------------------------------------------------------------------- #
+
+def codex_line(typ, payload, ts="2026-02-01T00:00:00Z"):
+    return json.dumps({"type": typ, "timestamp": ts, "payload": payload})
+
+
+def desktop_line(**kw):
+    return json.dumps(kw)
+
+
+class TestAdapterContract(unittest.TestCase):
+    def test_registry_and_capabilities(self):
+        self.assertEqual(set(insight.ADAPTERS), {"claude-code", "claude-desktop", "codex", "cursor"})
+        for name, ad in insight.ADAPTERS.items():
+            self.assertTrue(callable(ad.detect))
+            self.assertTrue(callable(ad.discover))
+            self.assertTrue(callable(ad.iter_events))
+            self.assertEqual(set(ad.capabilities), {"prompts", "edits", "verify", "reads", "delegation"})
+        # only Claude Code archives (others would collide on non-unique filenames / are cumulative)
+        self.assertTrue(insight.ADAPTERS["claude-code"].archive_enabled)
+        for n in ("claude-desktop", "codex", "cursor"):
+            self.assertFalse(insight.ADAPTERS[n].archive_enabled)
+
+    def test_default_parse_is_claude_code_and_unchanged(self):
+        # parse(files) with no adapter must behave exactly like the Claude Code adapter
+        tmp = tempfile.mkdtemp()
+        recs = [user_text("add a /health route to server.py"),
+                assistant_tool("Read", file_path="/x/server.py"),
+                assistant_tool("Edit", file_path="/x/server.py"),
+                assistant_tool("Bash", command="pytest -q")]
+        write_session(tmp, "s.jsonl", recs)
+        files = insight.discover_files(tmp)
+        a = insight.parse(files)
+        b = insight.parse(files, insight.ClaudeCodeAdapter)
+        self.assertEqual(len(a.real_prompts), len(b.real_prompts))
+        self.assertEqual(dict(a.tool_usage), dict(b.tool_usage))
+        self.assertEqual(a.delegation_events, b.delegation_events)
+        # tool_usage preserves original case (Bash/Read/Edit), timeline lowercases
+        self.assertIn("Bash", a.tool_usage)
+        self.assertEqual(len(a.real_prompts), 1)
+
+
+class TestPhase0Lock(unittest.TestCase):
+    """Lock the refactor: a rich Claude Code fixture must parse to exact, known values."""
+
+    def test_rich_corpus_values(self):
+        tmp = tempfile.mkdtemp()
+        recs = [
+            user_text("add a /health endpoint to server.py, only that file", ts="2026-01-01T00:00:00Z"),
+            user_tool_result(ts="2026-01-01T00:00:05Z"),                       # filtered
+            _rec(type="assistant", timestamp="2026-01-01T00:00:10Z",          # multi-tool record
+                 message={"role": "assistant", "content": [
+                     {"type": "text", "text": "ok"},
+                     {"type": "tool_use", "name": "Read", "input": {"file_path": "/x/server.py"}},
+                     {"type": "tool_use", "name": "Edit", "input": {"file_path": "/x/server.py"}}]}),
+            _rec(type="assistant", timestamp="2026-01-01T00:00:20Z",          # assistant text-only (ts only)
+                 message={"role": "assistant", "content": [{"type": "text", "text": "done"}]}),
+            assistant_tool("Bash", ts="2026-01-01T00:00:30Z", command="pytest -q"),
+            assistant_tool("Task", ts="2026-01-01T00:00:40Z"),                # delegation
+            user_text("run it", ts="2026-01-01T00:00:50Z"),
+        ]
+        write_session(tmp, "s.jsonl", recs)
+        c = insight.parse(insight.discover_files(tmp))
+        self.assertEqual(len(c.real_prompts), 2)
+        self.assertEqual(c.user_records, 3)                  # 2 real + 1 tool-result
+        self.assertEqual(c.filtered["tool results"], 1)
+        self.assertEqual(c.total_tool_calls, 4)              # Read, Edit, Bash, Task
+        self.assertEqual(c.delegation_events, 1)             # Task
+        self.assertEqual(c.tool_usage["Read"], 1)
+        self.assertEqual(len(c.sessions), 1)
+        # active time spans 50s of small gaps, never the idle cap
+        self.assertGreater(c.active_seconds, 0)
+        self.assertLessEqual(c.active_seconds, 50)
+
+
+class TestCodexAdapter(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        lines = [
+            codex_line("session_meta", {"id": "sess1", "cwd": "/Users/x/proj",
+                                        "git": {"repository_url": "https://github.com/me/myrepo.git"}}),
+            codex_line("response_item", {"type": "message", "role": "user",
+                                         "content": [{"type": "input_text", "text": "build a parser in parser.py"}]}),
+            codex_line("response_item", {"type": "message", "role": "developer",
+                                         "content": [{"type": "input_text", "text": "<permissions instructions> ..."}]}),
+            codex_line("response_item", {"type": "message", "role": "user",
+                                         "content": [{"type": "input_text", "text": "<environment_context>\ncwd: /Users/x\n</environment_context>"}]}),
+            codex_line("response_item", {"type": "function_call", "name": "exec_command",
+                                         "arguments": json.dumps({"cmd": "pytest -q", "workdir": "/Users/x/proj"})}),
+            codex_line("response_item", {"type": "custom_tool_call", "name": "apply_patch",
+                                         "input": "*** Begin Patch\n*** Add File: /Users/x/proj/new.py\n+print(1)\n*** Update File: parser.py\n@@\n-old\n+new\n*** End Patch"}),
+            codex_line("response_item", {"type": "function_call", "name": "update_plan",
+                                         "arguments": json.dumps({"plan": [{"step": "a", "status": "completed"}]})}),
+            codex_line("response_item", {"type": "web_search_call", "action": {"type": "search", "query": "python json"}}),
+            codex_line("response_item", {"type": "reasoning", "summary": [], "encrypted_content": "gAAAA"}),
+        ]
+        write_session(self.tmp, "rollout-2026-02-01T00-00-00-sess1.jsonl", lines)
+
+    def test_parses_prompts_tools_and_decontaminates(self):
+        files = insight.CodexAdapter.discover(self.tmp)
+        self.assertEqual(len(files), 1)
+        c = insight.parse(files, insight.CodexAdapter)
+        # only the one clean user message survives; developer is skipped, env-context dropped
+        self.assertEqual(len(c.real_prompts), 1)
+        self.assertEqual(c.real_prompts[0]["text"], "build a parser in parser.py")
+        self.assertGreaterEqual(c.filtered["injected / pasted"], 1)
+        merged = {k.lower(): v for k, v in c.tool_usage.items()}
+        self.assertEqual(merged.get("bash"), 1)        # exec_command
+        self.assertEqual(merged.get("write"), 1)       # Add File
+        self.assertEqual(merged.get("edit"), 1)        # Update File
+        self.assertEqual(merged.get("web_search"), 1)
+        self.assertGreaterEqual(c.delegation_events, 1)  # update_plan -> enterplanmode
+        self.assertEqual(sorted(c.projects), ["myrepo"])
+
+    def test_codex_context_is_not_measurable(self):
+        files = insight.CodexAdapter.discover(self.tmp)
+        c = insight.parse(files, insight.CodexAdapter)
+        result = insight.analyze(c, insight.CodexAdapter.capabilities)
+        self.assertIn("Context", result["na_dims"])
+        self.assertNotIn("Context", result["measurable"])
+        cards, strength = insight.build_action_plan(c, result)
+        self.assertNotIn("Context", [card["dim"] for card in cards])
+        html = insight.build_html(c, result, cards, strength, source="codex",
+                                  capabilities=insight.CodexAdapter.capabilities)
+        self.assertIn("not measurable", html.lower())
+        self.assertIn("OpenAI Codex CLI", html)
+
+
+class TestDesktopAdapter(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        sess = os.path.join(self.root, "sess1")
+        os.makedirs(sess, exist_ok=True)
+        lines = [
+            desktop_line(type="system", subtype="init", cwd="/Users/x/proj",
+                         session_id="s1", timestamp="2026-03-01T00:00:00Z"),
+            desktop_line(type="system", subtype="status", timestamp="2026-03-01T00:00:01Z"),
+            desktop_line(type="user", timestamp="2026-03-01T00:00:02Z",
+                         message={"role": "user", "content": "add a /health route to server.py"}),
+            desktop_line(type="user", timestamp="2026-03-01T00:00:03Z", tool_use_result={"x": 1},
+                         message={"role": "user", "content": [{"type": "tool_result", "content": "ok"}]}),
+            desktop_line(type="user", timestamp="2026-03-01T00:00:04Z", isReplay=True,
+                         message={"role": "user", "content": "add a /health route to server.py"}),
+            desktop_line(type="assistant", timestamp="2026-03-01T00:00:05Z",
+                         message={"role": "assistant", "content": [
+                             {"type": "tool_use", "name": "mcp__workspace__bash", "input": {"command": "pytest -q"}}]}),
+            desktop_line(type="assistant", timestamp="2026-03-01T00:00:06Z",
+                         message={"role": "assistant", "content": [
+                             {"type": "tool_use", "name": "Edit", "input": {"file_path": "/Users/x/server.py"}}]}),
+            desktop_line(type="result", timestamp="2026-03-01T00:00:07Z",
+                         permission_denials=[{"tool_name": "Bash", "tool_use_id": "t1", "tool_input": {}}]),
+            desktop_line(type="tool_use_summary", summary="ran tests", _audit_timestamp="2026-03-01T00:00:08Z"),
+        ]
+        write_session(sess, "audit.jsonl", lines)
+
+    def test_parses_and_decontaminates(self):
+        files = insight.ClaudeDesktopAdapter.discover(self.root)
+        self.assertEqual(len(files), 1)
+        c = insight.parse(files, insight.ClaudeDesktopAdapter)
+        self.assertEqual(len(c.real_prompts), 1)            # replay + tool_result dropped
+        self.assertEqual(c.real_prompts[0]["text"], "add a /health route to server.py")
+        self.assertGreaterEqual(c.filtered["tool results"], 1)
+        self.assertGreaterEqual(c.filtered["replays"], 1)
+        merged = {k.lower(): v for k, v in c.tool_usage.items()}
+        self.assertEqual(merged.get("bash"), 1)             # mcp__workspace__bash -> bash
+        self.assertEqual(merged.get("edit"), 1)
+        self.assertEqual(c.signals["permission_denials"], 1)
+        self.assertEqual(sorted(c.projects), ["claude-desktop"])
+
+
+class TestCursorAdapter(unittest.TestCase):
+    def _make_db(self):
+        import sqlite3
+        d = tempfile.mkdtemp()
+        db = os.path.join(d, "state.vscdb")
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value BLOB)")
+        composer = {"composerId": "c1", "isAgentic": True,
+                    "fullConversationHeadersOnly": [
+                        {"bubbleId": "b1", "type": 1}, {"bubbleId": "b2", "type": 2},
+                        {"bubbleId": "b3", "type": 2}, {"bubbleId": "b4", "type": 2}]}
+        rows = {
+            "composerData:c1": composer,
+            "bubbleId:c1:b1": {"type": 1, "text": "refactor utils.py to add caching"},
+            "bubbleId:c1:b2": {"type": 2, "toolFormerData": {
+                "name": "run_terminal_cmd", "params": {"command": "pytest -q"}, "userDecision": "approved"}},
+            "bubbleId:c1:b3": {"type": 2, "toolFormerData": {
+                "name": "read_file", "params": {"target_file": "/Users/x/utils.py"}}},
+            "bubbleId:c1:b4": {"type": 2, "toolFormerData": {
+                "name": "edit_file", "params": {"target_file": "/Users/x/utils.py"}, "userDecision": "rejected"}},
+        }
+        for k, v in rows.items():
+            conn.execute("INSERT INTO cursorDiskKV VALUES (?, ?)", (k, json.dumps(v)))
+        conn.commit()
+        conn.close()
+        return db
+
+    def test_parses_composer_bubbles(self):
+        db = self._make_db()
+        before = os.path.getsize(db)
+        files = insight.CursorAdapter.discover(db)
+        self.assertEqual(files, [db])
+        c = insight.parse(files, insight.CursorAdapter)
+        self.assertEqual(len(c.real_prompts), 1)
+        self.assertEqual(c.real_prompts[0]["text"], "refactor utils.py to add caching")
+        merged = {k.lower(): v for k, v in c.tool_usage.items()}
+        self.assertEqual(merged.get("bash"), 1)             # run_terminal_cmd
+        self.assertEqual(merged.get("read"), 1)
+        self.assertEqual(merged.get("edit"), 1)
+        self.assertEqual(c.signals["tool_rejections"], 1)   # userDecision == rejected
+        self.assertEqual(sorted(c.projects), ["cursor"])
+        # read-only: the source DB must be untouched (we copy before reading)
+        self.assertEqual(os.path.getsize(db), before)
+
+    def test_reads_live_wal_mode_db(self):
+        # A live Cursor DB is WAL-mode with uncheckpointed data in the -wal sidecar; the adapter
+        # must copy the sidecar and read it (regression for "copy main only + immutable=1" which
+        # silently returned zero data).
+        import sqlite3
+        d = tempfile.mkdtemp()
+        db = os.path.join(d, "state.vscdb")
+        conn = sqlite3.connect(db)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA wal_autocheckpoint=0")     # keep data in the -wal sidecar
+        conn.execute("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value BLOB)")
+        rows = {
+            "composerData:c1": {"fullConversationHeadersOnly": [
+                {"bubbleId": "b1", "type": 1}, {"bubbleId": "b2", "type": 2}]},
+            "bubbleId:c1:b1": {"type": 1, "text": "add caching to the API client"},
+            "bubbleId:c1:b2": {"type": 2, "toolFormerData": {
+                "name": "run_terminal_cmd", "params": {"command": "pytest -q"}}},
+        }
+        for k, v in rows.items():
+            conn.execute("INSERT INTO cursorDiskKV VALUES (?, ?)", (k, json.dumps(v)))
+        conn.commit()
+        try:
+            # do NOT close: simulate a running Cursor with an uncheckpointed WAL
+            self.assertTrue(os.path.exists(db + "-wal"))
+            c = insight.parse(insight.CursorAdapter.discover(db), insight.CursorAdapter)
+            self.assertEqual(len(c.real_prompts), 1)
+            self.assertIn("bash", {k.lower() for k in c.tool_usage})
+        finally:
+            conn.close()
+
+
+class TestPathScrub(unittest.TestCase):
+    def test_scrub_paths_strips_username(self):
+        self.assertEqual(insight._scrub_paths("see /Users/jane/proj/a.py please"), "see ~/proj/a.py please")
+        self.assertEqual(insight._scrub_paths("/home/bob/x/y.txt"), "~/x/y.txt")
+        self.assertEqual(insight._normalize_path("/Users/jane/proj/a.py"), "~/proj/a.py")
+        self.assertEqual(insight._normalize_path("relative/a.py"), "relative/a.py")
+
+    def test_scrub_bare_home_and_user_at_host(self):
+        # bare home dir (no trailing child) must still be scrubbed
+        self.assertEqual(insight._scrub_paths("my home is /Users/jane and repo /home/bob too"),
+                         "my home is ~ and repo ~ too")
+        self.assertEqual(insight._normalize_path("/Users/jane"), "~")
+        self.assertEqual(insight._normalize_path("/home/bob"), "~")
+        # pasted shell prompts leak user@host — redact it
+        self.assertEqual(insight._scrub_paths("(env) jane@Janes-MBP repo % ls"),
+                         "(env) <user>@<host> repo % ls")
+        # home-root project label must not echo the username
+        self.assertEqual(insight._project_label("-Users-jane"), "home")
+
+    def test_no_home_path_leaks_into_evidence(self):
+        # A Codex session whose prompt text AND patch embed absolute home paths must not leak them.
+        tmp = tempfile.mkdtemp()
+        lines = [
+            codex_line("session_meta", {"id": "s", "cwd": "/Users/jane/proj"}),
+            codex_line("response_item", {"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "fix the bug, see logs in /Users/jane/proj/run.log"}]}),
+            codex_line("response_item", {"type": "custom_tool_call", "name": "apply_patch",
+                                         "input": "*** Begin Patch\n*** Update File: /Users/jane/proj/a.py\n@@\n-x\n+y\n*** End Patch"}),
+        ]
+        write_session(tmp, "rollout-x.jsonl", lines)
+        c = insight.parse(insight.CodexAdapter.discover(tmp), insight.CodexAdapter)
+        result = insight.analyze(c, insight.CodexAdapter.capabilities)
+        cards, _ = insight.build_action_plan(c, result)
+        ev = insight.build_evidence(c, result, cards, source="codex",
+                                    capabilities=insight.CodexAdapter.capabilities)
+        blob = json.dumps(ev)
+        self.assertNotIn("/Users/", blob)
+        self.assertNotIn("/home/", blob)
+
+
+class TestMultiSourceCLI(unittest.TestCase):
+    def test_explicit_source_routes_to_adapter(self):
+        tmp = tempfile.mkdtemp()
+        lines = [
+            codex_line("session_meta", {"id": "s", "cwd": "/Users/x/proj"}),
+            codex_line("response_item", {"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "add a parser to parser.py and run pytest"}]}),
+            codex_line("response_item", {"type": "function_call", "name": "exec_command",
+                                         "arguments": json.dumps({"cmd": "pytest -q"})}),
+        ]
+        write_session(tmp, "rollout-x.jsonl", lines)
+        out = os.path.join(tmp, "r.html")
+        rc = insight.main(["--source", "codex", tmp, "-o", out, "--no-open"])
+        self.assertEqual(rc, 0)
+        html = open(out, encoding="utf-8").read()
+        self.assertIn("AI Fluency", html)
+        self.assertIn("OpenAI Codex CLI", html)
+
+    def test_source_all_rejects_explicit_path(self):
+        # 'all' reads each source's standard location; combining it with a path is ambiguous
+        rc = insight.main(["--source", "all", "/tmp", "--no-open"])
+        self.assertEqual(rc, 2)
+
+    def test_json_carries_source_and_capabilities(self):
+        tmp = tempfile.mkdtemp()
+        lines = [
+            codex_line("session_meta", {"id": "s", "cwd": "/Users/x/proj"}),
+            codex_line("response_item", {"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "add a parser to parser.py"}]}),
+        ]
+        write_session(tmp, "rollout-x.jsonl", lines)
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = insight.main(["--source", "codex", tmp, "--json", "--no-open"])
+        self.assertEqual(rc, 0)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["source"], "codex")
+        self.assertIn("Context", payload["not_measurable"])
+        self.assertFalse(payload["capabilities"]["reads"])
+
+
+class TestCombinedReport(unittest.TestCase):
+    def _entry(self, files, adapter):
+        c = insight.parse(files, adapter)
+        r = insight.analyze(c, adapter.capabilities)
+        cards, strength = insight.build_action_plan(c, r)
+        return {"source": adapter.name, "corpus": c, "result": r, "cards": cards, "strength": strength}
+
+    def test_combined_renders_all_sources_and_skill_map(self):
+        tmp = tempfile.mkdtemp()
+        cc = os.path.join(tmp, "cc"); os.makedirs(cc)
+        write_session(cc, "s.jsonl", [
+            user_text("add a /health endpoint to server.py, only that file"),
+            assistant_tool("Read", file_path="/x/server.py"),
+            assistant_tool("Edit", file_path="/x/server.py"),
+            assistant_tool("Bash", command="pytest -q"),
+            user_text("run it")])
+        e1 = self._entry(insight.ClaudeCodeAdapter.discover(cc), insight.ClaudeCodeAdapter)
+        cx = os.path.join(tmp, "cx"); os.makedirs(cx)
+        write_session(cx, "rollout-x.jsonl", [
+            codex_line("session_meta", {"id": "s", "cwd": "/Users/x/p"}),
+            codex_line("response_item", {"type": "message", "role": "user",
+                                         "content": [{"type": "input_text", "text": "build a parser in parser.py"}]}),
+            codex_line("response_item", {"type": "function_call", "name": "exec_command",
+                                         "arguments": json.dumps({"cmd": "pytest -q"})})])
+        e2 = self._entry(insight.CodexAdapter.discover(cx), insight.CodexAdapter)
+        analysis = {
+            "overall_read": "You delegate fluently; sharpen your briefs.",
+            "skill_map": [
+                {"competency": "Delegation", "level": 4, "level_label": "Advanced",
+                 "summary": "Hands off whole jobs.", "evidence": ["e2e plans"], "next_move": "add a success line"},
+                {"competency": "Description", "level": 2, "level_label": "Developing",
+                 "summary": "Terse.", "evidence": ["'run it'"], "next_move": "name a file + a constraint"},
+                {"competency": "Discernment", "level": 4, "level_label": "Advanced",
+                 "summary": "Verifies.", "evidence": ["pytest"], "next_move": "carry into Desktop"},
+                {"competency": "Diligence", "level": 3, "level_label": "Proficient",
+                 "summary": "Owns it.", "evidence": ["teardown"], "next_move": "verify before live"}],
+            "top_growth": [{"title": "Front-load one anchor", "why": "fewer rounds", "how": "name a file",
+                            "example_before": "run it", "example_after": "run pytest -q and paste output"}],
+            "strengths": ["elite delegation"]}
+        html = insight.build_combined_html([e1, e2], analysis)
+        for tok in ("Claude Code", "OpenAI Codex CLI", "Per-tool breakdown", "Platzi",
+                    "analyzed against the AI Fluency framework", "Front-load one anchor", "Delegation"):
+            self.assertIn(tok, html)
+        self.assertNotIn("/Users/", html)
+        # deterministic fallback (no analysis) still renders and points to /ai-fluency
+        html2 = insight.build_combined_html([e1, e2], None)
+        self.assertIn("/ai-fluency", html2)
+        self.assertIn("Per-tool breakdown", html2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -145,3 +145,24 @@ Rules for the analyst:
 3. **Respect agency and confidence** (above). Hedge thin signals.
 4. **Be honest.** If evidence is sparse for a competency, say so and lower confidence,
    don't invent. The numbers come from the deterministic engine; your job is judgment and direction.
+
+---
+
+## Appendix — signal availability per source
+
+The engine reads four coding-agent sources. They don't all expose the same signals, so the
+evidence bundle carries a `source` and a `capabilities` map, and lists any `not_measurable`
+competencies. **Respect it:** never assert a competency the source can't observe.
+
+| Source | Prompts (Description) | Edits | Verify (Discernment) | Reads → Context (Discernment) | Delegation |
+|---|---|---|---|---|---|
+| **claude-code** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **claude-desktop** | ✅ | ✅ | ✅ | ✅ | ✅ (Task/Agent/Skill) |
+| **codex** | ✅ | ✅ (apply_patch) | ✅ (exec/tests) | ⚠️ **not measurable** — no read tool; files are read via shell, so read-before-edit grounding can't be observed | ✅ (update_plan) |
+| **cursor** | ✅ | ✅ | ✅ | ✅ (read_file) | ⚠️ weak — agentic Composer only |
+
+When a competency is `not_measurable` for the source, do **not** include it in the skill map,
+do not score it, and say plainly that this source doesn't expose the signal. Extra source
+signals worth using when present: Claude Desktop `permission_denials` and Cursor
+`tool_rejections` (in `behavior.signals`) are positive **Discernment** evidence — the user
+scrutinized or rejected an agent action rather than rubber-stamping it.

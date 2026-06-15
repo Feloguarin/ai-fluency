@@ -10,8 +10,13 @@ export const meta = {
 }
 
 // Resolve inputs (the /ai-fluency skill passes absolute paths via args).
-const EV = (args && args.evidence) || '.insight/evidence.json'
+// `evidence` may be a single path (one source) OR a list of per-source bundles (multi-source) —
+// in the multi-source case the analysis is ONE cross-tool skill map that notes per-source differences.
+const _ev = (args && args.evidence) || '.insight/evidence.json'
+const EVS = Array.isArray(_ev) ? _ev : [_ev]
 const FW = (args && args.framework) || 'reference/ai-fluency-framework.md'
+const MULTI = EVS.length > 1
+const EV_LIST = EVS.map((p, i) => `  ${i + 1}. ${p}`).join('\n')
 
 const COMPETENCIES = [
   { key: 'Delegation',  focus: 'What they hand to the agent vs keep, and how they split work: end-to-end hand-offs vs micro-stepping, sub-agents / background jobs / planning, tool breadth (platform & path awareness). Signals: delegation_events, tool_usage, scope of prompts.' },
@@ -78,7 +83,9 @@ const VERDICT = {
   },
 }
 
-const READ = `Read the framework at ${FW} and the evidence bundle (JSON) at ${EV} using your Read tool. ` +
+const READ = `Read the framework at ${FW} and ${MULTI ? `these ${EVS.length} evidence bundles (one per coding-agent source):\n${EV_LIST}` : `the evidence bundle (JSON) at ${EVS[0]}`} using your Read tool. ` +
+  `Each bundle has a "source" and a "capabilities" map; a competency listed in "not_measurable" CANNOT be observed from that source — never claim it there. ` +
+  (MULTI ? `Assess the person ACROSS all sources and produce ONE unified skill map; cite which tool an observation comes from where it differs (e.g. "verifies in the terminal but less in Desktop"). ` : '') +
   `The evidence is de-contaminated, real, and local. Ground everything in it — quote real prompts; never invent.`
 
 // ---- Explore: Sonnet 4.6, one thorough explorer per competency -------------
@@ -101,11 +108,13 @@ const findingsJson = JSON.stringify(findings, null, 2)
 const analystPrompt =
   `${READ}\n\nYou are the senior AI-fluency assessor (write like a kind, exacting teacher). ` +
   `Four Sonnet explorers produced these competency findings:\n\n${findingsJson}\n\n` +
-  `Reconcile them with the deterministic scores in the evidence bundle and the framework's level ` +
+  `Reconcile them with the deterministic scores in the evidence bundle(s) and the framework's level ` +
   `rubric and "what good looks like". Produce the final assessment per the framework's OUTPUT CONTRACT: ` +
   `an overall_read, a skill_map with EXACTLY the four competencies (Delegation, Description, Discernment, ` +
   `Diligence) in that order, top_growth (1–3 items, each with a before/after drawn from THEIR real prompts), ` +
-  `and strengths. Respect agency (discount Claude-driven habits) and confidence (hedge thin signals). ` +
+  `and strengths. ` +
+  (MULTI ? `This is a UNIFIED cross-tool assessment: one skill map for the person, calling out where tools differ. ` : '') +
+  `Respect agency (discount Claude-driven habits) and confidence (hedge thin signals). ` +
   `Every claim must be grounded in the evidence.`
 let analysis = await agent(analystPrompt, { label: 'analyze', phase: 'Analyze', model: 'opus', schema: ANALYSIS })
 
