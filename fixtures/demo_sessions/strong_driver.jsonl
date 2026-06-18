@@ -1,0 +1,10 @@
+{"type": "user", "timestamp": "2026-06-01T10:00:00Z", "message": {"role": "user", "content": "Add a /health endpoint to server.py only \u2014 don't touch other files. Run pytest tests/test_server.py and paste the output before you finish."}}
+{"type": "assistant", "timestamp": "2026-06-01T10:00:10Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "/proj/server.py"}}]}}
+{"type": "assistant", "timestamp": "2026-06-01T10:00:20Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Edit", "input": {"file_path": "/proj/server.py"}}]}}
+{"type": "assistant", "timestamp": "2026-06-01T10:00:30Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Bash", "input": {"command": "python -m pytest tests/test_server.py -q"}}]}}
+{"type": "user", "timestamp": "2026-06-01T10:01:00Z", "message": {"role": "user", "content": "looks good, ship it"}}
+{"type": "user", "timestamp": "2026-06-01T10:05:00Z", "message": {"role": "user", "content": "Refactor auth/session.ts to use the new Session type. Don't change the public API; tests must still pass."}}
+{"type": "assistant", "timestamp": "2026-06-01T10:05:10Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "/proj/auth/session.ts"}}]}}
+{"type": "assistant", "timestamp": "2026-06-01T10:05:25Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Edit", "input": {"file_path": "/proj/auth/session.ts"}}]}}
+{"type": "user", "timestamp": "2026-06-01T10:06:00Z", "message": {"role": "user", "content": "run the auth tests and confirm green"}}
+{"type": "assistant", "timestamp": "2026-06-01T10:06:10Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Bash", "input": {"command": "npm test -- auth"}}]}}

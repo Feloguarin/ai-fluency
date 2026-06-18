@@ -1,0 +1,8 @@
+{"type": "user", "timestamp": "2026-06-02T10:00:00Z", "message": {"role": "user", "content": "fix it"}}
+{"type": "assistant", "timestamp": "2026-06-02T10:00:05Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "/proj/app.py"}}]}}
+{"type": "assistant", "timestamp": "2026-06-02T10:00:15Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Edit", "input": {"file_path": "/proj/app.py"}}]}}
+{"type": "assistant", "timestamp": "2026-06-02T10:00:25Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Bash", "input": {"command": "python -m pytest -q"}}]}}
+{"type": "user", "timestamp": "2026-06-02T10:01:00Z", "message": {"role": "user", "content": "ok"}}
+{"type": "user", "timestamp": "2026-06-02T10:05:00Z", "message": {"role": "user", "content": "do the thing"}}
+{"type": "assistant", "timestamp": "2026-06-02T10:05:10Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Edit", "input": {"file_path": "/proj/util.py"}}]}}
+{"type": "user", "timestamp": "2026-06-02T10:06:00Z", "message": {"role": "user", "content": "thanks"}}
