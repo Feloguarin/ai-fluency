@@ -7,7 +7,6 @@ set -euo pipefail
 # After this, open Claude Code in any folder and run:  /ai-fluency
 
 REPO="Feloguarin/claude-insight"
-BRANCH="main"
 SKILL_DIR="${HOME}/.claude/skills/ai-fluency"
 WORKFLOW_DIR="${HOME}/.claude/workflows"
 
@@ -21,15 +20,29 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 echo "✅ python3 found"
 
+# Resolve the latest *tagged release* so a work-in-progress commit on main can
+# never break a fresh install. Fall back to main only if no release exists yet.
+REF="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+  | grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+if [ -n "$REF" ]; then
+  echo "📦 Latest release: ${REF}"
+  URL="https://github.com/${REPO}/archive/refs/tags/${REF}.tar.gz"
+  DIRNAME="claude-insight-${REF#v}"
+else
+  echo "ℹ️  No tagged release found — falling back to main."
+  URL="https://github.com/${REPO}/archive/refs/heads/main.tar.gz"
+  DIRNAME="claude-insight-main"
+fi
+
 # Download the repo into a temp dir (tarball — no git or pip needed).
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 echo "📥 Downloading…"
-if ! curl -fsSL "https://github.com/${REPO}/archive/refs/heads/${BRANCH}.tar.gz" | tar -xz -C "$TMP"; then
+if ! curl -fsSL "$URL" | tar -xz -C "$TMP"; then
   echo "❌ Download failed. Check your connection and try again."
   exit 1
 fi
-SRC="${TMP}/claude-insight-${BRANCH}"
+SRC="${TMP}/${DIRNAME}"
 
 # Install the skill self-contained: the engine and the framework live next to SKILL.md,
 # and the workflow goes where Claude Code looks for workflows.
