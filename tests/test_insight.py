@@ -550,8 +550,18 @@ class TestNoTemplateMisframing(unittest.TestCase):
 
     def test_generic_examples_are_labeled_not_personalized(self):
         html = self._report_for(["fix it", "do the thing", "make it work", "change that"])
-        # the canned before/after pairs must be explicitly flagged as not-from-your-sessions
+        # cards without any of the user's own prompts to build on fall back to the
+        # canned pairs, which must stay explicitly flagged as not-from-your-sessions
         self.assertIn("not</b> from your sessions", html)
+
+    def test_own_prompt_gets_auto_rewrite_labeled_as_rule_made(self):
+        # When a weak prompt of THEIRS exists, the card must rewrite THAT prompt —
+        # and label the rewrite as auto-suggested, never as AI-written.
+        html = self._report_for(["fix it", "do the thing", "make it work", "change that"])
+        self.assertIn("Your own prompt, reshaped", html)     # honest label
+        self.assertIn("fix it", html)                        # their words in the card
+        self.assertNotIn("Tailored rewrite for you", html)   # that framing is Opus-only
+        self.assertNotIn("written for you", html)
 
     def test_two_different_users_get_their_own_evidence(self):
         a = self._report_for(["fix the frobnicator", "fix the frobnicator now",
@@ -797,6 +807,101 @@ class TestCompetencies(unittest.TestCase):
         r_blind = insight.analyze(insight.parse(insight.discover_files(blind)))
         self.assertLess(r_blind["competencies"]["Diligence"]["score"],
                         self.result["competencies"]["Diligence"]["score"])
+
+
+class TestEpisodeMining(unittest.TestCase):
+    """The 'mind reader' layer: specific, quotable moments — correction loops with
+    their cost, blind re-edits, unverified-ship-then-fix — mined deterministically."""
+
+    def _episodes(self, records):
+        tmp = tempfile.mkdtemp()
+        write_session(tmp, "s.jsonl", records)
+        corpus = insight.parse(insight.discover_files(tmp))
+        return insight.mine_episodes(corpus)
+
+    def test_correction_loop_is_found_with_turns_and_minutes(self):
+        recs = [
+            user_text("add retry logic to client.py", ts="2026-01-01T10:00:00Z"),
+            assistant_tool("Edit", file_path="/x/client.py", ts="2026-01-01T10:00:30Z"),
+            user_text("no that's wrong, try again", ts="2026-01-01T10:02:00Z"),
+            assistant_tool("Edit", file_path="/x/client.py", ts="2026-01-01T10:02:30Z"),
+            user_text("still broken, not what I asked", ts="2026-01-01T10:06:00Z"),
+            assistant_tool("Edit", file_path="/x/client.py", ts="2026-01-01T10:06:30Z"),
+            user_text("perfect, thanks", ts="2026-01-01T10:08:00Z"),
+        ]
+        eps = self._episodes(recs)
+        self.assertEqual(len(eps["correction_loops"]), 1)
+        loop = eps["correction_loops"][0]
+        self.assertEqual(loop["turns"], 2)
+        self.assertEqual(loop["minutes"], 4)          # 10:02 -> 10:06
+        self.assertIn("no that's wrong, try again", loop["prompts"][0])
+        self.assertEqual(eps["loop_turns_total"], 2)
+
+    def test_single_correction_is_not_a_loop(self):
+        recs = [
+            user_text("add retry logic to client.py"),
+            assistant_tool("Edit", file_path="/x/client.py"),
+            user_text("no, wrong file"),
+            assistant_tool("Edit", file_path="/x/client.py"),
+            user_text("now add the tests please"),
+        ]
+        self.assertEqual(self._episodes(recs)["correction_loops"], [])
+
+    def test_blind_reedit_is_found(self):
+        recs = [
+            user_text("tweak the config"),
+            assistant_tool("Edit", file_path="/x/conf.py"),   # blind (never read)
+            assistant_tool("Edit", file_path="/x/conf.py"),   # had to re-edit
+        ]
+        eps = self._episodes(recs)
+        self.assertEqual(len(eps["blind_reedits"]), 1)
+        self.assertEqual(eps["blind_reedits"][0]["file"], "conf.py")
+
+    def test_grounded_edit_is_not_a_blind_reedit(self):
+        recs = [
+            user_text("tweak the config"),
+            assistant_tool("Read", file_path="/x/conf.py"),
+            assistant_tool("Edit", file_path="/x/conf.py"),
+            assistant_tool("Edit", file_path="/x/conf.py"),
+        ]
+        self.assertEqual(self._episodes(recs)["blind_reedits"], [])
+
+    def test_ship_then_fix_is_found(self):
+        recs = [
+            user_text("update api.py and push"),
+            assistant_tool("Edit", file_path="/x/api.py"),
+            assistant_tool("Bash", command="git push origin main"),          # blind ship
+            user_text("it broke prod, revert the handler change"),
+            assistant_tool("Edit", file_path="/x/api.py"),
+            assistant_tool("Bash", command="git commit -am 'fix handler' && git push"),
+        ]
+        eps = self._episodes(recs)
+        self.assertEqual(len(eps["ship_then_fix"]), 1)
+        self.assertIn("git push", eps["ship_then_fix"][0]["ship_cmd"])
+
+    def test_best_brief_is_their_richest_prompt(self):
+        rich = ("Add rate limiting to api/server.py, only the public routes; "
+                "first read the file, then run the tests, because prod is rate-abused")
+        eps = self._episodes([user_text("fix it"), user_text(rich)])
+        self.assertIsNotNone(eps["best_brief"])
+        self.assertIn("rate limiting", eps["best_brief"]["text"])
+
+    def test_episodes_flow_into_evidence_bundle(self):
+        tmp = tempfile.mkdtemp()
+        write_session(tmp, "s.jsonl", [
+            user_text("add retry to client.py"),
+            assistant_tool("Edit", file_path="/x/client.py"),
+            user_text("no that's wrong, try again"),
+            assistant_tool("Edit", file_path="/x/client.py"),
+            user_text("still broken, revert it"),
+            assistant_tool("Edit", file_path="/x/client.py"),
+        ])
+        corpus = insight.parse(insight.discover_files(tmp))
+        result = insight.analyze(corpus)
+        cards, _ = insight.build_action_plan(corpus, result)
+        ev = insight.build_evidence(corpus, result, cards)
+        self.assertIn("episodes", ev["behavior"])
+        self.assertEqual(len(ev["behavior"]["episodes"]["correction_loops"]), 1)
 
 
 class TestDescriptionSubskills(unittest.TestCase):

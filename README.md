@@ -29,7 +29,9 @@ Python 3.8+ and Claude Code.
 - **A fluency score (0–100)** with a band — Operator → Developing → Proficient → Advanced → Expert — and what it means. The score **is** the AI Fluency framework, computed: the weighted blend of the four competencies below.
 - **Your builder archetype** — Autonomous Agent, Architect, Debugger, Collaborator, or Sprinter — picked from *your* behavior, not from keywords.
 - **A 4-competency skill map** — **Delegation · Description · Discernment · Diligence** (the AI Fluency framework) — each **measured deterministically** on a 1–5 level with one concrete next move. The AI stage adds judgment on top; it never invents the levels.
-- **Seven measured signals** behind the map — Briefing, Verification, Context-setting, Iteration, Toolcraft, Delegation depth, and Ship-gating — each a defensible rate, not a vanity count.
+- **Seven measured signals** behind the map — shown in plain English: *how you ask, checking the work, reading before changing, course-correcting, using the right tools, handing off whole jobs, checking before you ship* — each a defensible rate, not a vanity count.
+- **Mined moments, not generic advice.** The report finds the specific episodes where a habit cost you — correction loops (with your real prompts and roughly the minutes they burned), files edited blind that needed re-editing, unchecked pushes followed by fix commits — and quotes them back. Your "what to type instead" is **your own prompt, reshaped** (rule-suggested with ‹blanks›; the `/ai-fluency` Opus stage writes it fully).
+- **A report any human can read.** Plain-English everywhere, one accent color, big readable type, light *and* dark mode, and charts that carry the data (score ring, competency levels, signal bars, a real-vs-noise composition bar).
 - **What / Where / How** — your top growth levers, each tied to real moments in your transcripts and (when you run the full skill) a rewrite of one of *your own* prompts.
 - **Full transparency** on the data: how many prompts you really typed (vs. tool output, subagent turns, and injected noise), projects, MB, and hands-on time — across **more than the 30 days Claude Code keeps on disk** (see below).
 
@@ -204,19 +206,29 @@ rubric (Emerging → Expert), and the headline score is their weighted blend:
    Composed from Ship-gating (45%), Verification (30%), Context-setting (25%).
 
 ### The seven measured signals behind the competencies
-1. **Briefing / Direction** — how concretely you frame requests (constraint / artifact /
+(Report label — internal name.)
+1. **How you ask** *(Direction)* — how concretely you frame requests (constraint / artifact /
    intent rates, plus process- and performance-description cues: ordering the steps,
    shaping the output).
-2. **Verification** — running tests / build / app after a burst of edits.
-3. **Context-setting** — grounding edits in a prior read, instead of blind edits.
-4. **Iteration** — correcting precisely instead of vague rejection.
-5. **Toolcraft** — reaching for a healthy range of tools, not forcing everything through one.
-6. **Delegation** — hand-offs per active hour (sub-agents / background runs / planning) and
-   hand-off *depth*: the median number of agent actions each action-prompt buys before you
-   steer again. Whole jobs run long; micro-steps hand back after one tool call.
-7. **Ship-gating** — when work leaves the machine (`git commit/push`, deploys, publishes),
-   was it gated by a check that ran after the last edit? No ship events → neutral and fully
-   hedged, never a penalty.
+2. **Checking the work** *(Verification)* — running tests / build / app after a burst of edits.
+3. **Reading before changing** *(Context)* — grounding edits in a prior read, instead of blind edits.
+4. **Course-correcting** *(Iteration)* — correcting precisely instead of vague rejection.
+5. **Using the right tools** *(Toolcraft)* — reaching for a healthy range of tools, not forcing
+   everything through one.
+6. **Handing off whole jobs** *(Delegation)* — hand-offs per active hour (sub-agents /
+   background runs / planning) and hand-off *depth*: the median number of agent actions each
+   action-prompt buys before you steer again. Whole jobs run long; micro-steps hand back
+   after one tool call.
+7. **Checking before you ship** *(Shipping)* — when work leaves the machine
+   (`git commit/push`, deploys, publishes), was it gated by a check that ran after the last
+   edit? No ship events → neutral and fully hedged, never a penalty.
+
+### Mined moments (the "it watched me work" layer)
+Deterministically found in your own transcripts and quoted verbatim in the report and the
+evidence bundle: **correction loops** (2+ corrections in a row, with the prompts and the
+approximate minutes they cost), **blind re-edits** (a file changed without being read, then
+changed again), **ship-then-fix** (an unchecked push followed by a fix/revert commit), and
+your **best brief / sharpest correction** as proof you already know the target shape.
 
 (Verification and Context-setting are largely habits Claude drives on its own — they enter
 the score only through Discernment/Diligence at partial weight, and are further discounted

@@ -7,6 +7,25 @@ project aims for [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- **Report redesigned for humans.** Plain-English labels everywhere ("How you ask",
+  "Checking before you ship"…), a story order (score → skill map → your next moves →
+  the signals → the data), bigger type, one accent color, and full **light + dark**
+  support (`prefers-color-scheme`), with the palette validated for color-vision
+  deficiency and contrast. Charts carry the data: score ring, competency levels
+  with dots + bars, direct-labeled signal bars, and a real-prompts-vs-noise
+  composition bar.
+- **Growth advice is now personal by construction.** Each "move" card shows the
+  moments it happened to you (your prompts, your files, quoted verbatim), what it
+  cost ("~2 extra turns, ~7 min in correction loops"), and **your own prompt
+  reshaped** with ‹blank› fill-ins — honestly labeled as rule-suggested; the Opus
+  stage still writes the fully tailored rewrite. Generic stock examples appear
+  only when there is nothing of yours to build on, and stay labeled as generic.
+
+### Added
+- **Episode mining** (`mine_episodes`): correction loops (turns + minutes burned),
+  blind re-edits, unverified-ship-then-fix, and your best brief / sharpest
+  correction — deterministic, quoted verbatim, surfaced in the report and passed
+  to the AI stage via `behavior.episodes` so its growth cards cite real moments.
 - **The score now actually measures the AI Fluency framework.** The four 4D
   competencies — Delegation, Description, Discernment, Diligence — are computed
   deterministically from measured signals, and the headline score is their weighted

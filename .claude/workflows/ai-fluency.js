@@ -120,7 +120,11 @@ const analystPrompt =
   `constraint rate, a habit you saw); a concrete "how"; and the before/after where example_before is a ` +
   `REAL prompt they actually wrote (copy it VERBATIM from the evidence's sample_prompts or weak_examples — ` +
   `do not invent or paraphrase it) and example_after is your tailored rewrite of THAT exact prompt, ready ` +
-  `to paste, fixing the specific gap. Pack it with signal: name their files, tools, projects, and phrasing. ` +
+  `to paste, fixing the specific gap. behavior.episodes is your strongest material — correction loops with ` +
+  `their real prompts and the turns/minutes they cost, blind re-edits, unverified ships followed by fix ` +
+  `commits, and their own best brief/correction. Anchor the "why" of each growth item in one of those ` +
+  `moments when one exists ("this loop cost you ~N minutes"), and use best_brief/best_correction to show ` +
+  `them they already know the target shape. Pack it with signal: name their files, tools, projects, and phrasing. ` +
   `If two growth items would share the same before/after, replace one so no example repeats. ` +
   `Respect agency (discount Claude-driven habits) and confidence (hedge thin signals). ` +
   `Every claim — and every example_before — must be grounded in the evidence.`
