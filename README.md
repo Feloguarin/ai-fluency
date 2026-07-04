@@ -223,6 +223,23 @@ rubric (Emerging → Expert), and the headline score is their weighted blend:
    (`git commit/push`, deploys, publishes), was it gated by a check that ran after the last
    edit? No ship events → neutral and fully hedged, never a penalty.
 
+### You, Claude, or both? (owned vs borrowed habits)
+The score rates the **collaboration** on purpose — if you'll always build with an agent,
+setting up a partnership where verification always happens *is* the skill. But a habit is
+only robust if it's **yours**: for every check and every read, the engine measures whether
+*your prompt asked for it* or Claude volunteered it. The skill map then says, per
+competency, "who starts these habits today: mostly you / shared / mostly Claude" — and a
+Claude-carried habit is named **borrowed discipline**: real today, gone silently with a
+less diligent agent. The same measurement replaces the archetype's hardcoded agency
+constants with values measured from your own behavior.
+
+### The insight engine (why no two reports read alike)
+The written profile is composed from **pattern observations that only fire when your data
+shows them**, each carrying its own numbers: owned vs borrowed checks, front-loaded vs
+thin session openers, whether you get *more specific* or *terser* after a miss, projects
+where your briefing discipline drops, hand-offs that land without correction, what your
+correction loops cost in minutes, and ships that were always gated.
+
 ### Mined moments (the "it watched me work" layer)
 Deterministically found in your own transcripts and quoted verbatim in the report and the
 evidence bundle: **correction loops** (2+ corrections in a row, with the prompts and the

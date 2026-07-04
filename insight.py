@@ -1048,6 +1048,195 @@ def mine_episodes(corpus):
 
 
 # --------------------------------------------------------------------------- #
+# Driver share — owned habits vs borrowed ones.
+#
+# The fluency score deliberately rates the SYSTEM (you + Claude): setting up a
+# collaboration where verification always happens IS the skill, no matter whose
+# keystroke ran pytest. But a habit is only robust if the USER would keep it alive
+# with a less diligent agent — so we measure, for every check and every read, whether
+# the user's own prompt asked for it or the agent volunteered it. High agent share
+# isn't penalized; it's surfaced ("borrowed discipline") and it feeds the archetype's
+# agency weighting with MEASURED values instead of fixed constants.
+# --------------------------------------------------------------------------- #
+
+CHECK_DEMAND_RE = re.compile(
+    r"\b(test|tests|verify|check|make sure|confirm|prove|run (it|the|them)|green|lint|build it)\b", re.I)
+READ_DEMAND_RE = re.compile(
+    r"\b(read|look at|open|inspect|first understand|explore|review|study|before (touching|changing|editing))\b", re.I)
+
+
+def measure_driver_share(corpus):
+    """For each verification command and each read, attribute it to the USER when the
+    prompt steering that stretch of work asked for it, else to the agent. Coarse but
+    honest: it distinguishes 'I demand checks' from 'Claude happens to check'."""
+    v_user = v_total = r_user = r_total = 0
+    for sid, project, timeline in _iter_sessions(corpus):
+        last_prompt = None
+        for ev in timeline:
+            if ev["kind"] == "prompt":
+                last_prompt = ev["text"]
+                continue
+            name = ev["name"]
+            if name == "bash" and VERIFY_RE.search(ev.get("cmd") or ""):
+                v_total += 1
+                if last_prompt and CHECK_DEMAND_RE.search(last_prompt):
+                    v_user += 1
+            elif name in READ_TOOLS and ev.get("file"):
+                r_total += 1
+                if last_prompt and READ_DEMAND_RE.search(last_prompt):
+                    r_user += 1
+    return {
+        "verification": {"user": v_user, "total": v_total,
+                         "share": round(v_user / v_total, 2) if v_total else None},
+        "reading": {"user": r_user, "total": r_total,
+                    "share": round(r_user / r_total, 2) if r_total else None},
+    }
+
+
+def _measured_agency(driver):
+    """Archetype agency weights, measured per-user where the data allows: the more of
+    the checking/reading the user initiates, the more those axes describe THEM. Falls
+    back to the fixed constants below ~5 observed events."""
+    agency = dict(AGENCY)
+    v = driver["verification"]
+    if v["total"] >= 5:
+        agency["Verification"] = round(clamp(0.15 + 0.85 * v["share"], 0.15, 1.0), 2)
+    r = driver["reading"]
+    if r["total"] >= 5:
+        agency["Context"] = round(clamp(0.10 + 0.90 * r["share"], 0.10, 1.0), 2)
+    return agency
+
+
+def _driver_word(share):
+    if share is None:
+        return None
+    if share >= 0.5:
+        return "mostly you"
+    if share >= 0.2:
+        return "shared"
+    return "mostly Claude"
+
+
+# --------------------------------------------------------------------------- #
+# Insight engine — condition → observation rules that only fire when THIS person's
+# data shows the pattern, each carrying its own numbers. The written profile is
+# composed from the strongest fired insights, so two different people get genuinely
+# different reads instead of one template with swapped numbers.
+# --------------------------------------------------------------------------- #
+
+def derive_insights(corpus, result, driver, episodes):
+    ins = []  # {"key","kind":"strength"|"tension","weight",html}
+
+    def add(key, kind, weight, html):
+        ins.append({"key": key, "kind": kind, "weight": weight, "html": html})
+
+    det = result["detail"]
+    shrunk = result["shrunk"]
+
+    # 1/2 — owned vs borrowed discipline (the you-vs-you+Claude question, answered with data)
+    v = driver["verification"]
+    if v["total"] >= 5 and shrunk["Verification"] >= 55:
+        if v["share"] is not None and v["share"] < 0.25:
+            add("borrowed_checks", "tension", 3.0 + v["total"] / 20,
+                f"The checking happens — but <b>Claude starts {100 - round(v['share']*100)}% of the checks itself</b> "
+                f"({v['total'] - v['user']} of {v['total']}). That's <i>borrowed discipline</i>: it works today, and it "
+                f"disappears silently the day you work with a tool that doesn't volunteer it. Say the check yourself "
+                f"once per session (“…and run the tests before you finish”) and the habit becomes yours.")
+        elif v["share"] is not None and v["share"] >= 0.5:
+            add("owned_checks", "strength", 2.5 + v["total"] / 20,
+                f"<b>You ask for the checks yourself</b> — {v['user']} of {v['total']} verifications happened because "
+                f"your prompt demanded one. That habit is <i>owned</i>, not borrowed: it travels with you to any tool, "
+                f"any model, any teammate.")
+    r = driver["reading"]
+    if r["total"] >= 8 and r["share"] is not None and r["share"] >= 0.4:
+        add("owned_reading", "strength", 2.0,
+            f"You point before you shoot: {r['user']} of {r['total']} reads happened because you said where to look first.")
+
+    # 3 — front-loading: how session-openers compare to follow-ups
+    firsts, rests = [], []
+    for sid, project, timeline in _iter_sessions(corpus):
+        seen_first = False
+        for ev in timeline:
+            if ev["kind"] != "prompt":
+                continue
+            (rests, firsts)[not seen_first].append(len(ev["text"]))
+            seen_first = True
+    if len(firsts) >= 3 and len(rests) >= 6:
+        mf, mr = statistics.median(firsts), max(statistics.median(rests), 1)
+        if mf >= 2 * mr:
+            add("front_loader", "strength", 2.0,
+                f"You brief once, then steer terse: your session-openers run <b>{int(mf)} characters</b> against "
+                f"<b>{int(mr)}</b> after. That's an efficient shape — your loops start on the days the opener is thin.")
+        elif mf <= mr and shrunk["Direction"] < 55:
+            add("thin_openers", "tension", 2.2,
+                f"Your session-openers are as thin as your follow-ups ({int(mf)} vs {int(mr)} characters, median) — "
+                f"so the agent starts every session guessing. The single cheapest upgrade you have: make the first "
+                f"message of a session the complete one.")
+
+    # 4 — what happens after a miss: do you get more specific, or terser?
+    # Baseline = your normal prompts, with the corrections themselves excluded —
+    # otherwise heavy correctors drag their own baseline down and the signal vanishes.
+    corr = _find_corrections(corpus)
+    corr_texts = {x["text"] for x in corr}
+    base_pool = [p for p in corpus.real_prompts if p["text"] not in corr_texts]
+    base_words = statistics.median([len(p["text"].split()) for p in base_pool]) if base_pool else 0
+    if len(corr) >= 3 and base_words:
+        cw = statistics.median([len(x["text"].split()) for x in corr])
+        if cw >= base_words * 1.5:
+            add("adaptive_corrector", "strength", 2.4,
+                f"When Claude misses, <b>you get more specific, not louder</b> — your corrections run {int(cw)} words "
+                f"against a {int(base_words)}-word median prompt. That's textbook recovery; it's why your misses don't spiral.")
+        elif cw <= base_words * 0.7:
+            loops_n = len(episodes.get("correction_loops") or [])
+            loop_ref = (f" — it's where your {loops_n} correction loop(s) came from" if loops_n else "")
+            add("terse_corrector", "tension", 2.6,
+                f"When Claude misses, you get <b>terser</b> ({int(cw)} words vs your usual {int(base_words)}). A short "
+                f"“no” makes the agent guess again{loop_ref}. Spend one sentence on the symptom and the rule, and most "
+                f"loops end in one turn.")
+
+    # 5 — same person, different discipline across projects
+    by_proj = defaultdict(list)
+    for p in corpus.real_prompts:
+        by_proj[p["project"]].append(p["text"])
+    anchored = {}
+    for proj, texts in by_proj.items():
+        if len(texts) >= 8:
+            k = sum(1 for t in texts if ARTIFACT_RE.search(t) or (CONSTRAINT_CUE.search(t) and ACTION_VERB.search(t)))
+            anchored[proj] = k / len(texts)
+    if len(anchored) >= 2:
+        hi = max(anchored, key=anchored.get); lo = min(anchored, key=anchored.get)
+        if anchored[hi] - anchored[lo] >= 0.25:
+            add("project_split", "tension", 2.3,
+                f"You already know how to brief — on <b>{_esc(_project_label(hi))}</b>, {round(anchored[hi]*100)}% of your "
+                f"prompts carry an anchor (a file, a limit); on <b>{_esc(_project_label(lo))}</b> that falls to "
+                f"{round(anchored[lo]*100)}%. Same person, different discipline. The skill exists — spend it everywhere.")
+
+    # 6 — hand off and it lands
+    if corpus.delegation_events >= 3 and det["Iteration"].get("correction_rate", 1) <= 0.10:
+        add("trusted_handoffs", "strength", 2.0,
+            f"You hand off and it lands: {corpus.delegation_events} delegations (sub-agents, background runs, planning) "
+            f"with only {det['Iteration']['corrections']} corrections across {det['Iteration']['n']} prompts.")
+
+    # 7 — the most expensive pattern, in minutes
+    if episodes.get("loop_minutes_total", 0) >= 10:
+        n = len(episodes["correction_loops"])
+        add("loop_cost", "tension", 2.8,
+            f"The most expensive pattern this period: <b>{n} correction loop(s)</b> burning roughly "
+            f"<b>{episodes['loop_minutes_total']} minutes</b>. Every one of them starts the same way — a result rejected "
+            f"without saying what rule it broke.")
+
+    # 8 — clean shipper
+    ship = det["Shipping"]
+    if ship.get("rate") == 1.0 and ship.get("ships", 0) >= 3:
+        add("clean_shipper", "strength", 2.2,
+            f"Every ship was gated: {ship['gated']} of {ship['ships']} commits/pushes/deploys had a check run first. "
+            f"Nothing left your machine on hope.")
+
+    ins.sort(key=lambda x: x["weight"], reverse=True)
+    return ins
+
+
+# --------------------------------------------------------------------------- #
 # Aggregate: confidence shrinkage, overall score, band, archetype
 # --------------------------------------------------------------------------- #
 
@@ -1070,14 +1259,16 @@ def _cosine(a, b):
     return dot / (na * nb) if na and nb else 0.0
 
 
-def classify_archetype(dim_scores, delegation_score):
+def classify_archetype(dim_scores, delegation_score, agency=None):
     """Nearest-prototype over your DRIVING-STYLE vector, with a margin guard.
 
     The vector adds a Delegation axis and is AGENCY-WEIGHTED: axes you control
     (Direction, Iteration, Toolcraft, Delegation) count fully, while axes the agent
-    mostly drives on its own (Verification, Context) are heavily discounted — so the
-    archetype reflects how *you* drive, not Claude's built-in habits.
+    mostly drives on its own (Verification, Context) are discounted. When enough
+    events exist, the Verification/Context agency weights are MEASURED from driver
+    share (who actually initiated the checks and reads) instead of the constants.
     """
+    agency = agency or AGENCY
     scores = dict(dim_scores)
     scores["Delegation"] = delegation_score
     V = [scores[ax] for ax in ARCHETYPE_AXES]
@@ -1087,7 +1278,7 @@ def classify_archetype(dim_scores, delegation_score):
     cols = list(zip(*(mat + [V])))
     means = [statistics.mean(col) for col in cols]
     stds = [statistics.pstdev(col) or 1.0 for col in cols]
-    w = [AGENCY[ax] for ax in ARCHETYPE_AXES]
+    w = [agency[ax] for ax in ARCHETYPE_AXES]
 
     def zw(vec):
         return [w[i] * (v - means[i]) / stds[i] for i, v in enumerate(vec)]
@@ -1145,9 +1336,13 @@ def analyze(corpus):
     overall_raw = round(sum(COMP_WEIGHTS[c] * competencies[c]["raw"] for c in COMP_WEIGHTS))
     overall = round(sum(COMP_WEIGHTS[c] * competencies[c]["score"] for c in COMP_WEIGHTS))
     band, band_meaning = band_for(overall)
-    # Delegation is also a user-driven archetype axis.
+    # Who drives the borrowed-vs-owned habits: measured, then fed to the archetype so
+    # its agency weights describe THIS user rather than an assumed one.
+    driver = measure_driver_share(corpus)
+    agency = _measured_agency(driver)
     delegation_score = shrunk["Delegation"]
-    archetype = classify_archetype(shrunk, delegation_score)
+    archetype = classify_archetype(shrunk, delegation_score, agency)
+    archetype["agency_used"] = agency
 
     # length distribution of real prompts (context only)
     lens = [len(p["text"]) for p in corpus.real_prompts]
@@ -1161,12 +1356,15 @@ def analyze(corpus):
             "under_80_pct": round(100 * sum(1 for L in lens if L < 80) / len(lens)),
         }
 
-    return {
+    episodes = mine_episodes(corpus)
+    result = {
         "raw": raw, "shrunk": shrunk, "conf": conf, "detail": detail, "evidence": evidence,
-        "competencies": competencies, "episodes": mine_episodes(corpus),
+        "competencies": competencies, "episodes": episodes, "driver": driver,
         "overall_raw": overall_raw, "overall": overall, "band": band, "band_meaning": band_meaning,
         "archetype": archetype, "dist": dist, "fingerprint": _run_fingerprint(corpus),
     }
+    result["insights"] = derive_insights(corpus, result, driver, episodes)
+    return result
 
 
 def build_action_plan(corpus, result):
@@ -1288,7 +1486,16 @@ def build_evidence(corpus, result, cards, archive_info=None):
             "dimensions_adjusted": {k: round(v) for k, v in result["shrunk"].items()},
             "confidence": {k: round(v, 2) for k, v in result["conf"].items()},
             "dimension_names": DISPLAY_NAMES,
+            # Owned vs borrowed: who initiated the checks/reads. The score rates the
+            # collaboration on purpose; this says whether the habit is the user's.
+            "driver_share": result.get("driver"),
         },
+        # Fired pattern-observations (plain text, with their numbers) — the analyst
+        # should build on these; they are already grounded in this person's data.
+        "insights": [
+            {"kind": i["kind"], "text": re.sub(r"<[^>]+>", "", i["html"])}
+            for i in (result.get("insights") or [])[:6]
+        ],
         "dimension_detail": result["detail"],
         "archetype": {"primary": a["primary"], "secondary": a["secondary"],
                       "blended": a.get("blended")},
@@ -1468,45 +1675,53 @@ _GROWTH_LINE = {
 
 
 def build_assessment(corpus, result, cards):
-    """A coherent, professional written read — synthesizes the numbers into one story
-    and explicitly resolves the archetype-vs-weakest-dimension tension."""
+    """The written profile. Composed from the insight engine — observations that only
+    fire when THIS person's data shows the pattern, each carrying its own numbers — so
+    two people get genuinely different reads. Falls back to a sturdy generic paragraph
+    only where no insight fired."""
     a = result["archetype"]
     arch = a["primary"]
     short = arch.replace("The ", "")
     art = "an" if short[:1] in "AEIOU" else "a"
     deleg = a["delegation_score"]
-    n_deleg = corpus.delegation_events
     median = result["dist"].get("median_chars", "?")
+    ins = result.get("insights") or []
+    strengths = [i for i in ins if i["kind"] == "strength"][:2]
+    tensions = [i for i in ins if i["kind"] == "tension"][:2]
 
-    # signature strength = your strongest USER-driven signal (not Claude's defaults)
-    user_signals = {
-        "Direction": result["shrunk"]["Direction"], "Iteration": result["shrunk"]["Iteration"],
-        "Toolcraft": result["shrunk"]["Toolcraft"], "Delegation": float(deleg),
-    }
-    sig = max(user_signals, key=user_signals.get)
-
-    growth = cards[0]["dim"]
-    growth_disp = disp(growth)
-    example = _shortest_action_prompt(corpus) or "run it"
-    path_why = ARCH_PATHS.get(arch, "Keep building the habits below and your next run will show the gain.")
-
+    # -- who you are: identity + the shape of your work -------------------------
+    n_sessions = max(len(corpus.sessions), 1)
+    per_session = round(len(corpus.real_prompts) / n_sessions, 1)
     p1 = (f"You drive Claude like <b>{_esc(a['label'])}</b>. {_esc(a['blurb'])} "
-          f"The clearest signal is your delegation rate — <b>{deleg}/100</b>, from {n_deleg} hand-offs to "
-          f"subagents, background jobs and planning — paired with fast, terse prompts (median "
-          f"{median} characters).")
+          f"The shape of your work: {len(corpus.real_prompts)} prompts over {n_sessions} session(s) "
+          f"(≈{per_session} per session), median prompt {median} characters, "
+          f"<b>{deleg}/100</b> on handing off whole jobs. Together that lands the collaboration at "
+          f"<b>{result['overall']}/100 ({_esc(result['band'])})</b>.")
 
-    # Only credit the read→edit→verify loop when the data actually shows it; otherwise this
-    # clause was claiming a discipline some users' own report contradicts (0% verified / grounded).
-    loop_ok = result["shrunk"]["Context"] >= 55 and result["shrunk"]["Verification"] >= 55
-    p2_mid = ("That, plus the disciplined read→edit→verify loop your sessions show, is"
-              if loop_ok else "That is")
-    p2 = (f"Your strongest <i>self-driven</i> habit is {_esc(_SIG_DESC.get(sig, sig.lower()))}. "
-          f"{p2_mid} why your overall score lands at <b>{result['overall']}/100 ({_esc(result['band'])})</b>.")
+    # -- what's distinctly yours -------------------------------------------------
+    if strengths:
+        p2 = "<b>What's distinctly yours.</b> " + " ".join(s["html"] for s in strengths)
+    else:
+        user_signals = {
+            "Direction": result["shrunk"]["Direction"], "Iteration": result["shrunk"]["Iteration"],
+            "Toolcraft": result["shrunk"]["Toolcraft"], "Delegation": float(deleg),
+        }
+        sig = max(user_signals, key=user_signals.get)
+        p2 = (f"<b>What's distinctly yours.</b> Your strongest self-driven habit is "
+              f"{_esc(_SIG_DESC.get(sig, sig.lower()))}.")
 
-    gline = _GROWTH_LINE.get(growth, "").format(s=_esc(short), ex=_esc(example))
-    p3 = (f"And the apparent tension, resolved: your lowest dimension is <b>{_esc(growth_disp)}</b> — but for "
-          f"{art} {_esc(short)} that isn't a contradiction, it's the <i>defining</i> growth edge. {gline} "
-          f"{_esc(path_why)}")
+    # -- the tension worth resolving ----------------------------------------------
+    growth = cards[0]["dim"]
+    if tensions:
+        p3 = ("<b>The tension worth resolving.</b> " + " ".join(t["html"] for t in tensions)
+              + " The move cards below start exactly there.")
+    else:
+        example = _shortest_action_prompt(corpus) or "run it"
+        gline = _GROWTH_LINE.get(growth, "").format(s=_esc(short), ex=_esc(example))
+        path_why = ARCH_PATHS.get(arch, "Keep building the habits below and your next run will show the gain.")
+        p3 = (f"<b>The tension worth resolving.</b> Your lowest signal is <b>{_esc(disp(growth))}</b> — for "
+              f"{art} {_esc(short)} that isn't a contradiction, it's the defining growth edge. {gline} "
+              f"{_esc(path_why)}")
 
     return (f'<p class="assess">{p1}</p><p class="assess">{p2}</p><p class="assess">{p3}</p>')
 
@@ -1608,6 +1823,7 @@ def build_html(corpus, result, cards, strength, archive_info=None, analysis=None
           <span class="sig-val">{sk['score']}</span></div>
         <p class="comp-what">{_esc(sk['what'])}</p>
         <p class="comp-now"><b>You're here:</b> {_esc(sk['now'])}</p>
+        {f'<p class="comp-driver">{sk["driver"]}</p>' if sk.get('driver') else ''}
         <p class="comp-next"><b>Next:</b> {_esc(sk['next'])}</p>
       </div>"""
 
@@ -1883,6 +2099,7 @@ h3{{font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--m
 .comp-bar{{flex:1;margin:0}}
 .comp-what{{color:var(--ink2);font-size:14.5px}}
 .comp-now{{font-size:14px;color:var(--ink2);margin-top:6px}} .comp-now b{{color:var(--ink)}}
+.comp-driver{{font-size:13.5px;color:var(--mut);margin-top:5px;border-left:2px solid var(--grid);padding-left:9px}} .comp-driver b{{color:var(--ink2)}}
 .comp-next{{font-size:14px;margin-top:3px}} .comp-next b{{color:var(--good)}}
 .sk-dots{{white-space:nowrap}}
 .dot{{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--grid);margin-right:3px}}
@@ -2072,7 +2289,32 @@ _COMPETENCY_DEFS = [
 def _skill_levels(result):
     """The measured 4D skill map: per competency, its deterministic level, where the
     person is now, and the next move (the practice line of the weakest signal feeding
-    that competency — so the advice targets what actually held the level down)."""
+    that competency — so the advice targets what actually held the level down).
+
+    Discernment and Diligence also carry a measured 'who drives it today' line: the
+    score deliberately rates the collaboration (you + Claude), and this line says
+    whether the habit is OWNED (you initiate it) or BORROWED (Claude volunteers it) —
+    a borrowed habit works today and disappears with a less diligent agent."""
+    driver = result.get("driver") or {}
+
+    def driver_line(*keys):
+        tot = sum((driver.get(k) or {}).get("total", 0) for k in keys)
+        usr = sum((driver.get(k) or {}).get("user", 0) for k in keys)
+        if tot < 5:
+            return None
+        word = _driver_word(usr / tot)
+        if word == "mostly you":
+            return f"Who starts these habits today: <b>mostly you</b> ({usr} of {tot}) — owned, it travels with you."
+        if word == "shared":
+            return f"Who starts these habits today: <b>shared</b> — you initiate {usr} of {tot}; Claude covers the rest."
+        return (f"Who starts these habits today: <b>mostly Claude</b> (you asked for {usr} of {tot}) — "
+                f"borrowed discipline. It works, but it vanishes with a less diligent agent; "
+                f"ask for it yourself and it becomes yours.")
+
+    drivers = {
+        "Discernment": driver_line("verification", "reading"),
+        "Diligence": driver_line("verification"),
+    }
     out = []
     for name, what, rub in _COMPETENCY_DEFS:
         comp = result["competencies"][name]
@@ -2082,7 +2324,8 @@ def _skill_levels(result):
                else "maintain this — it's a real strength.")
         out.append({"name": name, "level": L, "label": comp["label"],
                     "score": round(comp["score"]), "conf": comp["conf"],
-                    "now": rub[L], "what": what, "next": nxt})
+                    "now": rub[L], "what": what, "next": nxt,
+                    "driver": drivers.get(name)})
     return out
 
 
@@ -2229,6 +2472,10 @@ def main(argv=None):
                 for k, v in result["competencies"].items()
             },
             "competency_weights": COMP_WEIGHTS,
+            "driver_share": result.get("driver"),
+            "insights": [{"kind": i["kind"], "key": i["key"],
+                          "text": re.sub(r"<[^>]+>", "", i["html"])}
+                         for i in (result.get("insights") or [])],
             "dimensions_raw": result["raw"], "dimensions_adjusted": result["shrunk"],
             "confidence": result["conf"], "detail": result["detail"],
             "data_ingested": {

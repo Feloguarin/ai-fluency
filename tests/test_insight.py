@@ -904,6 +904,140 @@ class TestEpisodeMining(unittest.TestCase):
         self.assertEqual(len(ev["behavior"]["episodes"]["correction_loops"]), 1)
 
 
+class TestDriverShare(unittest.TestCase):
+    """Owned vs borrowed habits: the score rates the collaboration by design, but we
+    measure who INITIATES the checks/reads so borrowed discipline is named, the
+    archetype's agency weights are measured, and the report can say 'mostly Claude'."""
+
+    def _corpus(self, records):
+        tmp = tempfile.mkdtemp()
+        write_session(tmp, "s.jsonl", records)
+        return insight.parse(insight.discover_files(tmp))
+
+    def test_user_demanded_check_vs_agent_initiated(self):
+        demanded = self._corpus([
+            user_text("fix auth.py and run the tests before you finish"),
+            assistant_tool("Edit", file_path="/x/auth.py"),
+            assistant_tool("Bash", command="python -m pytest -q"),
+        ])
+        volunteered = self._corpus([
+            user_text("fix auth.py"),
+            assistant_tool("Edit", file_path="/x/auth.py"),
+            assistant_tool("Bash", command="python -m pytest -q"),
+        ])
+        self.assertEqual(insight.measure_driver_share(demanded)["verification"]["share"], 1.0)
+        self.assertEqual(insight.measure_driver_share(volunteered)["verification"]["share"], 0.0)
+
+    def test_read_demand_attribution(self):
+        c = self._corpus([
+            user_text("read server.py first, then fix the handler"),
+            assistant_tool("Read", file_path="/x/server.py"),
+        ])
+        self.assertEqual(insight.measure_driver_share(c)["reading"]["share"], 1.0)
+
+    def test_measured_agency_shifts_with_driver_share(self):
+        # Enough events + all user-initiated -> Verification agency rises toward 1.0;
+        # all agent-initiated -> it drops to the floor. Thin data -> constants.
+        high = {"verification": {"user": 6, "total": 6, "share": 1.0},
+                "reading": {"user": 0, "total": 2, "share": 0.0}}
+        low = {"verification": {"user": 0, "total": 6, "share": 0.0},
+               "reading": {"user": 0, "total": 2, "share": 0.0}}
+        a_high = insight._measured_agency(high)
+        a_low = insight._measured_agency(low)
+        self.assertEqual(a_high["Verification"], 1.0)
+        self.assertEqual(a_low["Verification"], 0.15)
+        self.assertEqual(a_high["Context"], insight.AGENCY["Context"])  # only 2 reads -> fallback
+
+    def test_borrowed_discipline_surfaces_in_report(self):
+        # Verification strong but 100% Claude-initiated -> the skill map must say so.
+        recs = [user_text("add a /health endpoint to server.py, only that file, so the LB can probe it")]
+        for i in range(6):
+            recs += [assistant_tool("Edit", file_path="/x/server.py"),
+                     assistant_tool("Bash", command="python -m pytest -q")]
+        tmp = tempfile.mkdtemp()
+        write_session(tmp, "s.jsonl", recs)
+        corpus = insight.parse(insight.discover_files(tmp))
+        result = insight.analyze(corpus)
+        cards, strength = insight.build_action_plan(corpus, result)
+        html = insight.build_html(corpus, result, cards, strength)
+        self.assertIn("mostly Claude", html)
+        self.assertIn("borrowed discipline", html)
+
+
+class TestInsightEngine(unittest.TestCase):
+    """The profile must be composed from observations that fire on THIS person's data
+    — different behavior, different read — not one template with swapped numbers."""
+
+    def _result(self, records):
+        tmp = tempfile.mkdtemp()
+        write_session(tmp, "s.jsonl", records)
+        corpus = insight.parse(insight.discover_files(tmp))
+        return corpus, insight.analyze(corpus)
+
+    def test_borrowed_checks_insight_fires(self):
+        recs = [user_text("add a /health endpoint to server.py, only that file, so the LB can probe it")]
+        for i in range(6):
+            recs += [assistant_tool("Edit", file_path="/x/server.py"),
+                     assistant_tool("Bash", command="python -m pytest -q")]
+        _, result = self._result(recs)
+        keys = [i["key"] for i in result["insights"]]
+        self.assertIn("borrowed_checks", keys)
+
+    def test_owned_checks_insight_fires(self):
+        recs = []
+        for i in range(6):
+            recs += [user_text(f"fix bug {i} in server.py and run the tests to confirm"),
+                     assistant_tool("Edit", file_path="/x/server.py"),
+                     assistant_tool("Bash", command="python -m pytest -q")]
+        _, result = self._result(recs)
+        keys = [i["key"] for i in result["insights"]]
+        self.assertIn("owned_checks", keys)
+        self.assertNotIn("borrowed_checks", keys)
+
+    def test_terse_corrector_insight_fires(self):
+        recs = [user_text("please add the retry helper with backoff into the http client module today")]
+        for i in range(3):
+            recs += [assistant_tool("Edit", file_path="/x/c.py"),
+                     user_text("wrong, redo")]
+        recs += [assistant_tool("Edit", file_path="/x/c.py")]
+        _, result = self._result(recs)
+        keys = [i["key"] for i in result["insights"]]
+        self.assertIn("terse_corrector", keys)
+
+    def test_different_behavior_produces_different_profile_text(self):
+        borrowed = [user_text("add a /health endpoint to server.py, only that file, so the LB can probe it")]
+        for i in range(6):
+            borrowed += [assistant_tool("Edit", file_path="/x/server.py"),
+                         assistant_tool("Bash", command="python -m pytest -q")]
+        owned = []
+        for i in range(6):
+            owned += [user_text(f"fix bug {i} in server.py and run the tests to confirm"),
+                      assistant_tool("Edit", file_path="/x/server.py"),
+                      assistant_tool("Bash", command="python -m pytest -q")]
+        ca, ra = self._result(borrowed)
+        cb, rb = self._result(owned)
+        pa = insight.build_assessment(ca, ra, insight.build_action_plan(ca, ra)[0])
+        pb = insight.build_assessment(cb, rb, insight.build_action_plan(cb, rb)[0])
+        self.assertIn("borrowed", pa.lower())
+        self.assertIn("yours", pb.lower())
+        self.assertNotEqual(pa, pb)
+
+    def test_insights_flow_into_evidence(self):
+        recs = [user_text("add a /health endpoint to server.py, only that file, so the LB can probe it")]
+        for i in range(6):
+            recs += [assistant_tool("Edit", file_path="/x/server.py"),
+                     assistant_tool("Bash", command="python -m pytest -q")]
+        corpus, result = self._result(recs)
+        cards, _ = insight.build_action_plan(corpus, result)
+        ev = insight.build_evidence(corpus, result, cards)
+        self.assertIn("insights", ev)
+        self.assertTrue(any("borrowed" in i["text"].lower() for i in ev["insights"]))
+        self.assertIn("driver_share", ev["scores"])
+        # plain text only — no HTML leaks into the bundle
+        for i in ev["insights"]:
+            self.assertNotIn("<b>", i["text"])
+
+
 class TestDescriptionSubskills(unittest.TestCase):
     """Description has three legs in the framework; process/performance description
     (how to get there, what shape the output takes) must now be measured."""

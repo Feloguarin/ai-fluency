@@ -20,7 +20,7 @@ const FW = (args && args.framework) || '~/.claude/skills/ai-fluency/reference/ai
 const COMPETENCIES = [
   { key: 'Delegation',  focus: 'What they hand to the agent vs keep, and how they split work: end-to-end hand-offs vs micro-stepping, sub-agents / background jobs / planning, tool breadth (platform & path awareness). Signals: Delegation detail (events_per_hour, median_run — agent actions each hand-off buys), delegation_events, tool_usage, scope of prompts. The engine already computed a deterministic Delegation competency score in scores.competencies — reconcile with it.' },
   { key: 'Description',  focus: 'How concretely they brief the agent: do action prompts name a file/error (artifact), carry a constraint, state a why/acceptance test, and shape the process/output (process_rate, performance_rate)? Terse offloading vs front-loaded specific briefs. Signals: Direction detail + sample prompts. Reconcile with scores.competencies.Description.' },
-  { key: 'Discernment',  focus: 'How they evaluate outputs: verification after edit-bursts (tests/build/run), grounding edits in a prior read, correcting precisely (symptom + rule) vs vague rejection. Signals: Verification, Context, Iteration detail. NOTE agency: verification/grounding are partly Claude-driven — credit the USER moderately. Reconcile with scores.competencies.Discernment.' },
+  { key: 'Discernment',  focus: 'How they evaluate outputs: verification after edit-bursts (tests/build/run), grounding edits in a prior read, correcting precisely (symptom + rule) vs vague rejection. Signals: Verification, Context, Iteration detail. NOTE agency: scores.driver_share measures who initiates the checks/reads — if the user-share is low the habit is real but BORROWED (Claude-carried); say so. Reconcile with scores.competencies.Discernment.' },
   { key: 'Diligence',    focus: 'Responsibility: SHIP-GATING is the core observable — were commits/pushes/deploys gated by a check that ran after the last edit (Shipping detail: gated of ships)? Plus teardown of what was spun up and owning the result rather than blind-shipping. Signals: Shipping detail, verification teardown bonus, grounded edits. Reconcile with scores.competencies.Diligence.' },
 ]
 
@@ -111,7 +111,12 @@ const analystPrompt =
   `${READ}\n\nYou are the senior AI-fluency assessor (write like a kind, exacting teacher). ` +
   `Four Sonnet explorers produced these competency findings:\n\n${findingsJson}\n\n` +
   `Reconcile them with the deterministic scores in the evidence bundle and the framework's level ` +
-  `rubric and "what good looks like". Produce the final assessment per the framework's OUTPUT CONTRACT: ` +
+  `rubric and "what good looks like". The bundle's top-level "insights" are pattern-observations already ` +
+  `grounded in this person's data (with their numbers) — build on them, don't contradict them without ` +
+  `evidence. scores.driver_share says who actually initiates the checking/reading (the user or Claude): ` +
+  `the score rates the collaboration by design, so treat a Claude-carried habit as real but BORROWED — ` +
+  `name it that way and make owning it a growth move when the user-share is low. ` +
+  `Produce the final assessment per the framework's OUTPUT CONTRACT: ` +
   `an overall_read, a skill_map with EXACTLY the four competencies (Delegation, Description, Discernment, ` +
   `Diligence) in that order, top_growth, and strengths. ` +
   `\n\nThe top_growth section is the heart of the report — it is rendered as this person's "how to grow" ` +

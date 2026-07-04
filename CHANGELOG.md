@@ -22,6 +22,21 @@ project aims for [Semantic Versioning](https://semver.org/).
   only when there is nothing of yours to build on, and stay labeled as generic.
 
 ### Added
+- **Owned vs borrowed habits (driver share).** The score deliberately rates the
+  collaboration (you + Claude) — that *is* fluency when you always work with an
+  agent. What's now measured on top is **who initiates** each check and each read:
+  your prompt demanded it, or Claude volunteered it. Low user-share isn't
+  penalized; it's named — "borrowed discipline: it works today and vanishes with
+  a less diligent agent" — shown per competency in the skill map, passed to the
+  AI stage, and used to replace the archetype's hardcoded agency constants with
+  values measured from your own behavior.
+- **Insight engine** (`derive_insights`): condition → observation rules that fire
+  only when your data shows the pattern — owned/borrowed checks, front-loaded vs
+  thin session openers, whether you get more specific or terser after a miss,
+  per-project discipline gaps, trusted hand-offs, loop cost, clean shipping. The
+  written profile is now composed from the fired insights (each carrying its own
+  numbers), so different people get genuinely different reads instead of one
+  template with swapped numbers.
 - **Episode mining** (`mine_episodes`): correction loops (turns + minutes burned),
   blind re-edits, unverified-ship-then-fix, and your best brief / sharpest
   correction — deterministic, quoted verbatim, surfaced in the report and passed
