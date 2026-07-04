@@ -6,6 +6,25 @@ project aims for [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **The score now actually measures the AI Fluency framework.** The four 4D
+  competencies — Delegation, Description, Discernment, Diligence — are computed
+  deterministically from measured signals, and the headline score is their weighted
+  blend (25/30/25/20). Previously the 4Ds were only estimated by the optional LLM
+  stage, Delegation was absent from the score entirely, and Diligence was a
+  5-point teardown bonus.
+- Two new measured signals feed the competencies: **Delegation** (hand-offs per
+  active hour plus hand-off *depth* — the median number of agent actions each
+  action-prompt buys before the user steers again, so whole-job hand-offs beat
+  micro-stepping) and **Ship-gating** (commits/pushes/deploys gated by a
+  verification that ran after the last edit; no ship events → neutral and hedged).
+- Briefing/Direction now also measures the framework's process- and
+  performance-description sub-skills (ordering the steps, shaping the output),
+  not just product cues.
+- The report's skill map, the evidence bundle (`scores.competencies`), `--json`,
+  and the terminal summary all carry the measured competency levels; the AI
+  analysis stage is told to reconcile with them instead of inventing levels.
+
 ### Added
 - Continuous integration: the test suite runs on every push to `main` and every
   pull request, across Python 3.8 / 3.10 / 3.12. Nothing merges red.

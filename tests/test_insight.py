@@ -633,5 +633,198 @@ class TestPersonalizedGrowthAndQuiet(unittest.TestCase):
         self.assertIn("not</b> from your sessions", html)
 
 
+class TestDelegationSignal(unittest.TestCase):
+    """Delegation must reward whole-job hand-offs (long autonomous runs) over
+    micro-stepping (a hand-back after every tool call) — the framework's core
+    Delegation observable, previously not measured at all."""
+
+    def _corpus(self, records):
+        tmp = tempfile.mkdtemp()
+        write_session(tmp, "s.jsonl", records)
+        return insight.parse(insight.discover_files(tmp))
+
+    def test_whole_job_beats_microstepping(self):
+        whole = [user_text("implement the retry helper in client.py and run the tests until green")]
+        whole += [assistant_tool(t, file_path="/x/client.py") for t in
+                  ["Read", "Grep", "Edit", "Edit", "Write"]]
+        whole += [assistant_tool("Bash", command="python -m pytest -q"),
+                  assistant_tool("Bash", command="python -m pytest -q")]
+        micro = []
+        for i in range(6):
+            micro.append(user_text(f"edit line {i} of client.py"))
+            micro.append(assistant_tool("Edit", file_path="/x/client.py"))
+        s_whole, d_whole, _ = insight.score_delegation(self._corpus(whole))
+        s_micro, d_micro, ev = insight.score_delegation(self._corpus(micro))
+        self.assertGreater(s_whole, s_micro)
+        self.assertGreater(d_whole["median_run"], d_micro["median_run"])
+        # micro-stepping surfaces as evidence the report can show
+        self.assertTrue(ev)
+        self.assertIn("text", ev[0])
+
+    def test_no_action_prompts_is_neutral_not_penalized(self):
+        c = self._corpus([user_text("hi"), user_text("what can you do?")])
+        s, d, ev = insight.score_delegation(c)
+        self.assertEqual(s, 50.0)
+        self.assertEqual(d["n"], 0)   # zero opportunities -> fully hedged by shrink()
+
+    def test_repeating_microsteps_does_not_raise_score(self):
+        few = []
+        for i in range(4):
+            few.append(user_text("edit client.py"))
+            few.append(assistant_tool("Edit", file_path="/x/client.py"))
+        many = few * 15
+        s_few, _, _ = insight.score_delegation(self._corpus(few))
+        tmp2 = tempfile.mkdtemp()
+        write_session(tmp2, "s.jsonl", many)
+        s_many, _, _ = insight.score_delegation(insight.parse(insight.discover_files(tmp2)))
+        self.assertLessEqual(s_many, s_few + 1.0)
+
+
+class TestShippingGate(unittest.TestCase):
+    """Diligence's core observable: work that leaves the machine (commit/push/deploy)
+    must be gated by a verification that ran after the last edit."""
+
+    def _score(self, records):
+        tmp = tempfile.mkdtemp()
+        write_session(tmp, "s.jsonl", records)
+        return insight.score_shipping(insight.parse(insight.discover_files(tmp)))
+
+    def test_gated_ship_beats_blind_ship(self):
+        gated = [
+            user_text("fix the bug in api.py then commit"),
+            assistant_tool("Edit", file_path="/x/api.py"),
+            assistant_tool("Bash", command="python -m pytest -q"),
+            assistant_tool("Bash", command="git commit -am 'fix' && git push"),
+        ]
+        blind = [
+            user_text("fix the bug in api.py then commit"),
+            assistant_tool("Edit", file_path="/x/api.py"),
+            assistant_tool("Bash", command="git commit -am 'fix' && git push"),
+        ]
+        sg, dg, evg = self._score(gated)
+        sb, db, evb = self._score(blind)
+        self.assertGreater(sg, sb)
+        self.assertEqual(dg["rate"], 1.0)
+        self.assertEqual(db["rate"], 0.0)
+        # the blind ship is surfaced as evidence, with the command
+        self.assertTrue(evb)
+        self.assertIn("git commit", evb[0]["cmd"])
+
+    def test_compound_check_and_ship_counts_as_gated(self):
+        recs = [
+            user_text("update api.py and push it"),
+            assistant_tool("Edit", file_path="/x/api.py"),
+            assistant_tool("Bash", command="npm test && git push origin main"),
+        ]
+        s, d, _ = self._score(recs)
+        self.assertEqual(d["rate"], 1.0)
+
+    def test_no_ship_events_is_neutral(self):
+        recs = [user_text("explain auth.py to me"),
+                assistant_tool("Read", file_path="/x/auth.py")]
+        s, d, ev = self._score(recs)
+        self.assertEqual(s, 50.0)
+        self.assertEqual(d["n"], 0)
+        self.assertIsNone(d["rate"])
+
+
+class TestCompetencies(unittest.TestCase):
+    """The headline score must BE the 4D framework: four deterministic competency
+    scores whose weighted blend is the overall score."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        write_session(self.tmp, "s.jsonl", [
+            user_text("add a /health endpoint to server.py, only that file, so the LB can probe it"),
+            assistant_tool("Read", file_path="/x/server.py"),
+            assistant_tool("Edit", file_path="/x/server.py"),
+            assistant_tool("Bash", command="python -m pytest -q"),
+            assistant_tool("Bash", command="git commit -am 'health endpoint'"),
+        ])
+        self.corpus = insight.parse(insight.discover_files(self.tmp))
+        self.result = insight.analyze(self.corpus)
+
+    def test_all_four_competencies_scored_with_levels(self):
+        comps = self.result["competencies"]
+        self.assertEqual(set(comps), {"Delegation", "Description", "Discernment", "Diligence"})
+        for c in comps.values():
+            self.assertTrue(0 <= c["score"] <= 100)
+            self.assertTrue(1 <= c["level"] <= 5)
+            self.assertIn(c["label"], insight.COMP_LEVEL_LABELS)
+            self.assertTrue(0 <= c["conf"] <= 1)
+
+    def test_overall_is_the_weighted_competency_blend(self):
+        expected = round(sum(insight.COMP_WEIGHTS[c] * self.result["competencies"][c]["score"]
+                             for c in insight.COMP_WEIGHTS))
+        self.assertEqual(self.result["overall"], expected)
+        # weights are a real distribution, in both views
+        self.assertAlmostEqual(sum(insight.COMP_WEIGHTS.values()), 1.0, places=6)
+        self.assertAlmostEqual(sum(insight.WEIGHTS.values()), 1.0, places=6)
+        for mix in insight.COMP_MIX.values():
+            self.assertAlmostEqual(sum(mix.values()), 1.0, places=6)
+
+    def test_report_and_evidence_carry_the_competencies(self):
+        cards, strength = insight.build_action_plan(self.corpus, self.result)
+        html = insight.build_html(self.corpus, self.result, cards, strength)
+        self.assertIn("the four competencies, measured", html)
+        for comp in ("Delegation", "Description", "Discernment", "Diligence"):
+            self.assertIn(comp, html)
+        ev = insight.build_evidence(self.corpus, self.result, cards)
+        self.assertEqual(set(ev["scores"]["competencies"]),
+                         {"Delegation", "Description", "Discernment", "Diligence"})
+        self.assertIn("competency_weights", ev["scores"])
+
+    def test_json_output_carries_competencies(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = insight.main([self.tmp, "--json", "--no-open"])
+        self.assertEqual(rc, 0)
+        payload = json.loads(buf.getvalue())
+        self.assertIn("competencies", payload)
+        self.assertEqual(set(payload["competencies"]),
+                         {"Delegation", "Description", "Discernment", "Diligence"})
+
+    def test_unverified_shipping_lowers_diligence(self):
+        blind = tempfile.mkdtemp()
+        write_session(blind, "s.jsonl", [
+            user_text("add a /health endpoint to server.py, only that file, so the LB can probe it"),
+            assistant_tool("Read", file_path="/x/server.py"),
+            assistant_tool("Edit", file_path="/x/server.py"),
+            assistant_tool("Bash", command="python -m pytest -q"),
+            assistant_tool("Edit", file_path="/x/server.py"),   # edit AFTER the check…
+            assistant_tool("Bash", command="git push origin main"),  # …then ship blind
+        ])
+        r_blind = insight.analyze(insight.parse(insight.discover_files(blind)))
+        self.assertLess(r_blind["competencies"]["Diligence"]["score"],
+                        self.result["competencies"]["Diligence"]["score"])
+
+
+class TestDescriptionSubskills(unittest.TestCase):
+    """Description has three legs in the framework; process/performance description
+    (how to get there, what shape the output takes) must now be measured."""
+
+    def _direction(self, prompts):
+        tmp = tempfile.mkdtemp()
+        write_session(tmp, "s.jsonl", [user_text(p) for p in prompts])
+        return insight.score_direction(insight.parse(insight.discover_files(tmp)))
+
+    def test_process_and_performance_cues_are_detected(self):
+        s, d, _ = self._direction([
+            "First read auth.py, then fix the token refresh; show me the diff as markdown",
+            "Start by running the failing test, then patch session.ts step by step",
+        ])
+        self.assertGreater(d["process_rate"], 0)
+        self.assertGreater(d["performance_rate"], 0)
+        self.assertGreater(d["shape_rate"], 0)
+
+    def test_shaped_briefs_score_higher_than_bare_ones(self):
+        bare = ["fix the token refresh in auth.py", "patch the session bug in session.ts"]
+        shaped = ["First read auth.py, then fix the token refresh; show me the diff",
+                  "Start by running the failing test, then patch session.ts in that order"]
+        s_bare, _, _ = self._direction(bare)
+        s_shaped, _, _ = self._direction(shaped)
+        self.assertGreater(s_shaped, s_bare)
+
+
 if __name__ == "__main__":
     unittest.main()

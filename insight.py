@@ -93,6 +93,19 @@ VERIFY_RE = re.compile(
 # Clean-teardown of a live system (small bonus, folded into Verification).
 TEARDOWN_RE = re.compile(r"(lsof -ti.*kill|pkill|kill -9|docker compose down|docker-compose down)", re.I)
 
+# Commands where work leaves the machine (or becomes shared history). The Diligence
+# competency's core observable is whether these are GATED by a verification that ran
+# after the last edit — "did they check before it mattered".
+SHIP_RE = re.compile(
+    r"\b("
+    r"git (commit|push|merge)|gh (pr|release) (create|merge)|"
+    r"npm publish|yarn publish|twine upload|cargo publish|gem push|"
+    r"terraform apply|kubectl apply|docker push|"
+    r"fly deploy|vercel deploy|netlify deploy|eb deploy|cap deploy"
+    r")\b",
+    re.I,
+)
+
 # Direction (prompt-quality) cues.
 ARTIFACT_RE = re.compile(
     r"([\w./\-]+\.(py|js|ts|tsx|jsx|html|css|md|json|sh|ya?ml|toml|rs|go|java|cpp|c|rb|sql))"
@@ -108,6 +121,19 @@ CONSTRAINT_CUE = re.compile(
 INTENT_CUE = re.compile(
     r"\b(so that|because|the goal is|in order to|for the demo|for my|for the|so i can|so we can|"
     r"so it|i need|i want .* so)\b", re.I
+)
+# Description has three sub-skills in the AI Fluency framework. Product description is the
+# artifact/constraint/intent cues above; these two catch the other legs:
+#   process description — telling the agent HOW to get there (order, steps, gates)
+#   performance description — the shape/format/style the output should take
+PROCESS_CUE = re.compile(
+    r"\b(first|then|after that|before (you|that)|start by|step \d|one at a time|"
+    r"in (that|this) order|once (that|it|you)|finally)\b", re.I
+)
+PERFORMANCE_CUE = re.compile(
+    r"\b(act as|as (json|markdown|a table)|be (concise|brief|thorough|specific)|"
+    r"format (it|the output|as)|in the style of|output only|respond (with|in)|"
+    r"show (me )?the diff|no (commentary|explanations?))\b", re.I
 )
 ACTION_VERB = re.compile(
     r"\b(add|create|build|make|implement|write|fix|change|update|refactor|remove|delete|run|"
@@ -126,22 +152,45 @@ CORRECTION_RATE_CEILING = 0.35   # a "high" correction rate; lower is better
 # Delegation / planning tool signals.
 DELEGATION_TOOLS = {"agent", "task", "workflow", "exitplanmode", "enterplanmode"}
 
-# Dimension weights (sum to 1.0).
-WEIGHTS = {
-    "Direction": 0.24,
-    "Verification": 0.22,
-    "Context": 0.22,
-    "Iteration": 0.18,
-    "Toolcraft": 0.14,
+# ---- The 4D competency layer -------------------------------------------------
+# The AI Fluency framework defines fluency as four competencies: Delegation,
+# Description, Discernment, Diligence. The engine measures seven behavioral SIGNALS
+# from transcripts and blends them into deterministic competency scores; the headline
+# score is the weighted competency blend. (The AI stage adds judgment on top — it
+# never changes these numbers.)
+COMP_WEIGHTS = {"Delegation": 0.25, "Description": 0.30, "Discernment": 0.25, "Diligence": 0.20}
+
+# How each competency is composed from the measured signals (each row sums to 1.0),
+# following the mapping in reference/ai-fluency-framework.md. Note the agency logic is
+# built in: Verification/Context (habits Claude largely drives) enter only through
+# Discernment/Diligence at partial weight, while the user-driven signals (Direction,
+# Delegation, Shipping, Iteration) carry the competencies they define.
+COMP_MIX = {
+    "Delegation":  {"Delegation": 0.45, "Toolcraft": 0.35, "Direction": 0.20},
+    "Description": {"Direction": 0.80, "Iteration": 0.20},
+    "Discernment": {"Verification": 0.40, "Context": 0.35, "Iteration": 0.25},
+    "Diligence":   {"Shipping": 0.45, "Verification": 0.30, "Context": 0.25},
 }
-# Opportunity-count targets for per-dimension confidence shrinkage.
-TARGET_N = {"Direction": 60, "Verification": 15, "Context": 25, "Iteration": 12, "Toolcraft": 40}
+COMP_LEVEL_LABELS = ["Emerging", "Developing", "Proficient", "Advanced", "Expert"]
+
+# Effective per-signal weights, DERIVED from the competency blend so the two views can
+# never drift apart: overall = Σ COMP_WEIGHTS·competency = Σ WEIGHTS·signal.
+WEIGHTS = {}
+for _comp, _mix in COMP_MIX.items():
+    for _sig, _w in _mix.items():
+        WEIGHTS[_sig] = WEIGHTS.get(_sig, 0.0) + COMP_WEIGHTS[_comp] * _w
+del _comp, _mix, _sig, _w
+
+# Opportunity-count targets for per-signal confidence shrinkage.
+TARGET_N = {"Direction": 60, "Verification": 15, "Context": 25, "Iteration": 12,
+            "Toolcraft": 40, "Delegation": 25, "Shipping": 8}
 
 # User-facing labels. "Direction" is shown as "Briefing" so it never collides with the
 # "Director" archetype (the dimension measures how well you brief; the archetype, that
 # you delegate — different things).
 DISPLAY_NAMES = {"Direction": "Briefing", "Verification": "Verification",
-                 "Context": "Context-setting", "Iteration": "Iteration", "Toolcraft": "Toolcraft"}
+                 "Context": "Context-setting", "Iteration": "Iteration", "Toolcraft": "Toolcraft",
+                 "Delegation": "Delegation", "Shipping": "Ship-gating"}
 
 def disp(name):
     return DISPLAY_NAMES.get(name, name)
@@ -192,6 +241,28 @@ SKILL_TEACH = {
         ],
         "practice": "Before sending a correction, check it names both the symptom and the rule. If it only says “no,” add the missing half.",
         "good_looks_like": "One sharp correction — symptom, rule, and the fix — and the agent lands it on the next try.",
+    },
+    "Delegation": {
+        "what_it_is": "Handing the agent whole, outcome-shaped jobs — and reaching for planning, sub-agents and background runs when the work is big or parallel.",
+        "why_it_matters": "Micro-stepping wastes the agent's autonomy: every hand-back costs you a round-trip, while a scoped whole job lets it search, edit and verify in one run.",
+        "how_to_improve": "Bundle your next three micro-requests into one hand-off with a finish line: what done looks like, what not to touch, and tell the agent to keep going until it's verified.",
+        "examples": [
+            {"before": "open api.py", "after": "In api.py, add rate-limiting to the public endpoints (100 req/min per key), leave the admin routes alone, and run the tests — come back when they pass."},
+            {"before": "now add the test", "after": "Implement the retry helper in http/client.py and add tests covering timeout and 5xx; run pytest and iterate until green, then summarize what changed."},
+        ],
+        "practice": "Once per session, hand off a whole task with a 'done when…' line instead of steering it step by step.",
+        "good_looks_like": "You define outcomes and guardrails; the agent plans, executes and verifies the middle on its own.",
+    },
+    "Shipping": {
+        "what_it_is": "Gating anything that leaves the machine — commits, pushes, deploys, publishes — behind a real check that ran after your last edit.",
+        "why_it_matters": "A commit or deploy is the moment a mistake becomes everyone's problem; one test or build run right before it is the cheapest insurance there is.",
+        "how_to_improve": "Make the check part of the ship request itself: 'run the tests, and only commit if they pass.' Never let a ship command be the first thing after an edit.",
+        "examples": [
+            {"before": "commit and push", "after": "Run the test suite; if it's green, commit with a message describing the rate-limit change and push. If anything fails, stop and show me the output."},
+            {"before": "deploy it", "after": "Build, run the smoke tests against staging, then deploy. Paste the health-check response after so we know it's live and healthy."},
+        ],
+        "practice": "Put one verification between your last edit and your next commit, push or deploy — every time.",
+        "good_looks_like": "Every commit, push or deploy sits right after a passing check — shipping is a verified act, not a hopeful one.",
     },
     "Toolcraft": {
         "what_it_is": "Letting the agent use the right tool for each step — searching the code, running commands, starting the app, working in the background — instead of forcing everything through chat.",
@@ -573,35 +644,46 @@ def score_direction(corpus):
     n = len(prompts)
     if n == 0:
         return 0.0, {"n": 0}, []
-    constraint = artifact = intent = 0
+    constraint = artifact = intent = process = performance = shaped = 0
     weak_examples = []
     for p in prompts:
         t = p["text"]
         has_artifact = bool(ARTIFACT_RE.search(t))
         has_constraint = bool(CONSTRAINT_CUE.search(t) and ACTION_VERB.search(t))
         has_intent = bool(INTENT_CUE.search(t))
+        has_process = bool(PROCESS_CUE.search(t))
+        has_performance = bool(PERFORMANCE_CUE.search(t))
         artifact += 1 if has_artifact else 0
         constraint += 1 if has_constraint else 0
         intent += 1 if has_intent else 0
+        process += 1 if has_process else 0
+        performance += 1 if has_performance else 0
+        shaped += 1 if (has_process or has_performance) else 0
         if _is_action_prompt(t) and not (has_artifact or has_constraint or has_intent) and len(t) < 120:
             weak_examples.append(p)
     constraint_rate = constraint / n
     artifact_rate = artifact / n
     intent_rate = intent / n
+    # process/performance description (the framework's other two Description legs):
+    # saying HOW to get there (order, steps) or what SHAPE the output should take.
+    shape_rate = shaped / n
     # front-loading: penalize rules first revealed via a high-info correction
     corr = _find_corrections(corpus)
     new_rule_corrections = sum(1 for x in corr if x["high_info"])
     action_prompts = max(1, sum(1 for p in prompts if _is_action_prompt(p["text"])))
     front_loading = 1 - clamp(new_rule_corrections / action_prompts, 0, 1)
     score = 100 * (
-        0.30 * squash(constraint_rate, 0.45)
+        0.25 * squash(constraint_rate, 0.45)
         + 0.20 * squash(artifact_rate, 0.45)
-        + 0.25 * squash(intent_rate, 0.30)
-        + 0.25 * front_loading
+        + 0.20 * squash(intent_rate, 0.30)
+        + 0.15 * squash(shape_rate, 0.25)
+        + 0.20 * front_loading
     )
     detail = {
         "n": n, "constraint_rate": constraint_rate, "artifact_rate": artifact_rate,
-        "intent_rate": intent_rate, "front_loading": front_loading,
+        "intent_rate": intent_rate, "process_rate": process / n,
+        "performance_rate": performance / n, "shape_rate": shape_rate,
+        "front_loading": front_loading,
     }
     return score, detail, weak_examples[:6]
 
@@ -753,6 +835,83 @@ def score_toolcraft(corpus):
     return score, detail, []
 
 
+def score_delegation(corpus):
+    """Delegation as the framework defines it: handing the agent WHOLE jobs, not
+    micro-steps. Two rate-based parts:
+      * hand-off events per active hour (sub-agents, background runs, planning) —
+        path awareness;
+      * hand-off depth — the median number of agent actions each action-prompt buys
+        before the user has to steer again. A whole job runs long on its own; a
+        micro-step hands back after one tool call.
+    Both are rates, so doing MORE of the same never raises the score."""
+    run_lengths = []
+    micro_examples = []
+    for sid, project, timeline in _iter_sessions(corpus):
+        cur = None      # the action prompt whose run we're counting
+        count = 0
+        for ev in timeline:
+            if ev["kind"] == "prompt":
+                if cur is not None:
+                    run_lengths.append(count)
+                    if count <= 1:
+                        micro_examples.append({"session": sid, "project": project,
+                                               "text": cur["text"]})
+                cur = ev if _is_action_prompt(ev["text"]) else None
+                count = 0
+            elif cur is not None:
+                count += 1
+        if cur is not None:
+            run_lengths.append(count)
+            if count <= 1:
+                micro_examples.append({"session": sid, "project": project, "text": cur["text"]})
+    n = len(run_lengths)
+    if n == 0:
+        return 50.0, {"n": 0, "delegation_events": corpus.delegation_events,
+                      "events_per_hour": 0.0, "median_run": 0}, []
+    active_hours = max(corpus.active_seconds / 3600, 0.5)
+    eph = corpus.delegation_events / active_hours
+    median_run = statistics.median(run_lengths)
+    depth = squash(median_run, 6)
+    score = 100 * (0.5 * squash(eph, 2.0) + 0.5 * depth)
+    detail = {"n": n, "delegation_events": corpus.delegation_events,
+              "events_per_hour": round(eph, 2), "median_run": round(median_run, 1)}
+    return score, detail, micro_examples[:4]
+
+
+def score_shipping(corpus):
+    """Deployment diligence: when work leaves the machine (commit/push/deploy/publish),
+    was it GATED by a verification that ran after the last edit? A ship command that is
+    itself compound with a check (e.g. `npm test && git push`) counts as gated. With no
+    ship events at all the signal is neutral (n=0 → fully hedged), never a penalty."""
+    ships = gated = 0
+    blind_examples = []
+    for sid, project, timeline in _iter_sessions(corpus):
+        dirty = False   # edits since the last verification
+        for ev in timeline:
+            if ev["kind"] != "tool":
+                continue
+            name = ev["name"]
+            cmd = ev.get("cmd") or ""
+            if name in EDIT_TOOLS:
+                dirty = True
+            elif name == "bash":
+                if SHIP_RE.search(cmd):
+                    ships += 1
+                    if not dirty or VERIFY_RE.search(cmd):
+                        gated += 1
+                    else:
+                        blind_examples.append({"session": sid, "project": project,
+                                               "cmd": cmd[:100]})
+                    dirty = False
+                elif VERIFY_RE.search(cmd):
+                    dirty = False
+    if ships == 0:
+        return 50.0, {"n": 0, "ships": 0, "gated": 0, "rate": None}, []
+    rate = gated / ships
+    score = 100 * squash(rate, 0.80)
+    return score, {"n": ships, "ships": ships, "gated": gated, "rate": rate}, blind_examples[:4]
+
+
 # --------------------------------------------------------------------------- #
 # Aggregate: confidence shrinkage, overall score, band, archetype
 # --------------------------------------------------------------------------- #
@@ -817,11 +976,27 @@ def classify_archetype(dim_scores, delegation_score):
 # Analysis orchestration
 # --------------------------------------------------------------------------- #
 
+def compute_competencies(raw, shrunk, conf):
+    """Blend the measured signals into the four AI-fluency competencies (the 4Ds),
+    per COMP_MIX. Each competency carries a raw and confidence-adjusted score, a
+    blended confidence, and a 1–5 level on the framework's rubric."""
+    out = {}
+    for comp, mix in COMP_MIX.items():
+        s = sum(w * shrunk[d] for d, w in mix.items())
+        r = sum(w * raw[d] for d, w in mix.items())
+        c = sum(w * conf[d] for d, w in mix.items())
+        lv = max(1, min(5, int(s // 20) + 1))
+        out[comp] = {"score": s, "raw": r, "conf": c, "level": lv,
+                     "label": COMP_LEVEL_LABELS[lv - 1]}
+    return out
+
+
 def analyze(corpus):
     raw, detail, evidence = {}, {}, {}
     for name, fn in (("Direction", score_direction), ("Verification", score_verification),
                      ("Context", score_context), ("Iteration", score_iteration),
-                     ("Toolcraft", score_toolcraft)):
+                     ("Toolcraft", score_toolcraft), ("Delegation", score_delegation),
+                     ("Shipping", score_shipping)):
         s, d, ev = fn(corpus)
         raw[name], detail[name], evidence[name] = s, d, ev
 
@@ -829,12 +1004,14 @@ def analyze(corpus):
     for name in raw:
         shrunk[name], conf[name] = shrink(raw[name], detail[name].get("n", 0), TARGET_N[name])
 
-    overall_raw = round(sum(WEIGHTS[n] * raw[n] for n in WEIGHTS))
-    overall = round(sum(WEIGHTS[n] * shrunk[n] for n in WEIGHTS))
+    # The headline score IS the 4D framework, computed: the weighted blend of the four
+    # competencies (which, being linear, equals the effective per-signal WEIGHTS blend).
+    competencies = compute_competencies(raw, shrunk, conf)
+    overall_raw = round(sum(COMP_WEIGHTS[c] * competencies[c]["raw"] for c in COMP_WEIGHTS))
+    overall = round(sum(COMP_WEIGHTS[c] * competencies[c]["score"] for c in COMP_WEIGHTS))
     band, band_meaning = band_for(overall)
-    # Delegation is a user-driven archetype axis (handoffs per active hour).
-    active_hours = max(corpus.active_seconds / 3600, 0.5)
-    delegation_score = 100 * squash(corpus.delegation_events / active_hours, 2.0)
+    # Delegation is also a user-driven archetype axis.
+    delegation_score = shrunk["Delegation"]
     archetype = classify_archetype(shrunk, delegation_score)
 
     # length distribution of real prompts (context only)
@@ -851,6 +1028,7 @@ def analyze(corpus):
 
     return {
         "raw": raw, "shrunk": shrunk, "conf": conf, "detail": detail, "evidence": evidence,
+        "competencies": competencies,
         "overall_raw": overall_raw, "overall": overall, "band": band, "band_meaning": band_meaning,
         "archetype": archetype, "dist": dist, "fingerprint": _run_fingerprint(corpus),
     }
@@ -917,6 +1095,8 @@ def build_evidence(corpus, result, cards, archive_info=None):
                 c["file"] = os.path.basename(str(e["file"]))
             if e.get("files"):
                 c["files"] = str(e["files"])
+            if e.get("cmd"):
+                c["cmd"] = _scrub_paths(str(e["cmd"])[:120])
             if e.get("project"):
                 c["project"] = _project_label(e["project"])
             if c:
@@ -942,6 +1122,15 @@ def build_evidence(corpus, result, cards, archive_info=None):
         "scores": {
             "overall": result["overall"], "overall_raw": result["overall_raw"],
             "band": result["band"], "weights": WEIGHTS,
+            # Deterministic 4D competency scores (the framework, computed). The analysis
+            # stage reconciles its judgment with these — it does not replace them.
+            "competencies": {
+                k: {"score": round(v["score"]), "raw": round(v["raw"]), "level": v["level"],
+                    "label": v["label"], "confidence": round(v["conf"], 2)}
+                for k, v in result["competencies"].items()
+            },
+            "competency_weights": COMP_WEIGHTS,
+            "competency_mix": COMP_MIX,
             "dimensions_raw": {k: round(v) for k, v in result["raw"].items()},
             "dimensions_adjusted": {k: round(v) for k, v in result["shrunk"].items()},
             "confidence": {k: round(v, 2) for k, v in result["conf"].items()},
@@ -1050,10 +1239,12 @@ def _project_label(name):
 
 def terminal_summary(corpus, result):
     a = result["archetype"]
+    comp = " · ".join(f"{k} L{v['level']}" for k, v in result["competencies"].items())
     lines = [
         "",
         f"  AI Fluency Score: {result['overall']}/100  ({result['band']})",
         f"  Archetype: {a['label']}",
+        f"  Competencies: {comp}",
         f"  Based on {len(corpus.real_prompts)} real prompts across {len(corpus.projects)} projects, "
         f"{corpus.files} sessions ({corpus.total_bytes/1e6:.1f} MB).",
         "",
@@ -1089,6 +1280,8 @@ _GROWTH_LINE = {
     "Context": "Right now some edits land before the file has been read that session — an easy blind-edit risk to remove.",
     "Iteration": "Right now corrections lean toward brief rejections; naming the symptom and the exact rule resolves loops in fewer turns.",
     "Toolcraft": "Right now most work funnels through one tool — reaching for search, planning and delegation widens what you can take on.",
+    "Delegation": "Right now tasks are often steered step by step — bundling them into whole, outcome-shaped hand-offs buys back the round-trips.",
+    "Shipping": "Right now some commits/pushes follow edits with no check in between — gate each ship behind one verification.",
 }
 
 
@@ -1162,6 +1355,8 @@ def build_html(corpus, result, cards, strength, archive_info=None, analysis=None
         "Context": "Reading a file before editing it — grounded, not blind, changes.",
         "Iteration": "Correcting precisely instead of thrashing with vague rejections.",
         "Toolcraft": "Using a healthy range of tools — not forcing everything through one.",
+        "Delegation": "Handing over whole jobs (plans, sub-agents, background runs) instead of micro-steps.",
+        "Shipping": "Commits, pushes and deploys gated behind a check that ran after the last edit.",
     }
 
     def dim_rate_line(name):
@@ -1172,11 +1367,19 @@ def build_html(corpus, result, cards, strength, archive_info=None, analysis=None
             return f"{det['grounded']} of {det['total_edits']} edits were grounded in a prior read ({det['rate']*100:.0f}%)"
         if name == "Direction":
             return (f"{det['constraint_rate']*100:.0f}% carry a constraint · "
-                    f"{det['artifact_rate']*100:.0f}% name a file/error · {det['intent_rate']*100:.0f}% state a why")
+                    f"{det['artifact_rate']*100:.0f}% name a file/error · {det['intent_rate']*100:.0f}% state a why · "
+                    f"{det.get('shape_rate', 0)*100:.0f}% shape the process/output")
         if name == "Iteration":
             return f"{det['corrections']} correction turns ({det['correction_rate']*100:.0f}% of prompts); {det['specificity']*100:.0f}% were specific"
         if name == "Toolcraft":
             return f"{det.get('distinct', 0)} distinct tools, evenness {det.get('evenness', 0.0):.2f}, {det.get('delegation_events', 0)} delegations"
+        if name == "Delegation":
+            return (f"{det.get('delegation_events', 0)} hand-offs ({det.get('events_per_hour', 0.0)}/active hour) · "
+                    f"median {det.get('median_run', 0)} agent actions per task you hand off")
+        if name == "Shipping":
+            if det.get("rate") is None:
+                return "no commit/push/deploy commands observed — neutral, fully hedged"
+            return f"{det['gated']} of {det['ships']} ship commands were gated by a check ({det['rate']*100:.0f}%)"
         return ""
 
     # dimension bars
@@ -1247,10 +1450,13 @@ def build_html(corpus, result, cards, strength, archive_info=None, analysis=None
         # small-sample guard per project
         proj_counts = Counter(p["project"] for p in corpus.real_prompts)
         for e in ev[:3]:
-            if name == "Direction" or name == "Iteration":
+            if name in ("Direction", "Iteration", "Delegation"):
                 proj = e["project"]; txt = _scrub_paths(e["text"])
                 small = " <em>(illustrative, small sample)</em>" if proj_counts.get(proj, 0) < 10 else ""
                 items += f'<li>“{_esc(txt[:140])}” <span class="loc">— {_esc(_project_label(proj))}{small}</span></li>'
+            elif name == "Shipping":
+                small = " <em>(illustrative)</em>" if proj_counts.get(e["project"], 0) < 10 else ""
+                items += f'<li>Shipped with <code>{_esc(_scrub_paths(e["cmd"]))}</code> right after edits, with nothing run in between <span class="loc">— {_esc(_project_label(e["project"]))}{small}</span></li>'
             elif name == "Context":
                 small = " <em>(illustrative)</em>" if proj_counts.get(e["project"], 0) < 10 else ""
                 items += f'<li>Edited <code>{_esc(os.path.basename(e["file"]))}</code> without reading it first <span class="loc">— {_esc(_project_label(e["project"]))}{small}</span></li>'
@@ -1305,15 +1511,16 @@ def build_html(corpus, result, cards, strength, archive_info=None, analysis=None
         <p>{strength_body}</p>
       </div>"""
 
-    # skill map (levels)
+    # skill map: the four 4D competencies, deterministically measured
     skill_levels = _skill_levels(result)
     skill_html = ""
     for sk in skill_levels:
         dots = "".join(
             f'<span class="dot {"on" if i < sk["level"] else ""}"></span>' for i in range(5)
         )
+        lowdata = ' <span class="tag ld">low data</span>' if sk["conf"] < 0.75 else ""
         skill_html += f"""<div class="skill">
-          <div class="sk-top"><span class="sk-name">{_esc(sk['name'])} <span class="lvl">Level {sk['level']}/5</span></span><span class="sk-dots">{dots}</span></div>
+          <div class="sk-top"><span class="sk-name">{_esc(sk['name'])} <span class="lvl">Level {sk['level']}/5 · {_esc(sk['label'])} · {sk['score']}/100</span>{lowdata}</span><span class="sk-dots">{dots}</span></div>
           <p class="sk-what">{_esc(sk['what'])}</p>
           <p class="sk-now"><b>You're here:</b> {_esc(sk['now'])}</p>
           <p class="sk-next"><b>Next move:</b> {_esc(sk['next'])}</p></div>"""
@@ -1511,7 +1718,13 @@ code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
 {analysis_status_html}
 
 <section>
-  <h3>The five dimensions</h3>
+  <h3>Your skill map — the four competencies, measured</h3>
+  <p class="exgen" style="margin-bottom:12px">Delegation · Description · Discernment · Diligence (the AI Fluency framework's 4Ds), computed deterministically from the measured signals below. The score ring above is the weighted blend of these four.</p>
+  {skill_html}
+</section>
+
+<section>
+  <h3>The measured signals behind the competencies</h3>
   {dim_html}
 </section>
 
@@ -1520,11 +1733,6 @@ code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
   {improve_intro}
   {improve_cards}
   {strength_html}
-</section>
-
-<section>
-  <h3>Your skill map</h3>
-  {skill_html}
 </section>
 
 <section>
@@ -1541,7 +1749,8 @@ code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
   <h3>Methodology &amp; honesty</h3>
   <details><summary>How every number was computed (click to expand)</summary>
     <p><b>Only real prompts are scored.</b> A “user” record counts as a prompt only if it is not a tool-result, not a subagent (sidechain) turn, not meta/injected, not a slash-command stub, and not a paste/system-prompt over {MAX_HUMAN_PROMPT_CHARS:,} chars or opening with “You are …”. This removes the contamination that made the old tool report a {d.get('mean_chars','?')}-vs-real average.</p>
-    <p><b>Everything is a rate, then squashed.</b> Each dimension is a per-prompt or per-opportunity rate run through min(1, rate/target), so doing more work never raises the score — only doing it better does. Weights: Briefing 24%, Verification 22%, Context-setting 22%, Iteration 18%, Toolcraft 14%.</p>
+    <p><b>The score is the 4D framework, computed.</b> Seven behavioral signals — Briefing, Verification, Context-setting, Iteration, Toolcraft, Delegation (hand-off events + median agent actions per hand-off) and Ship-gating (commits/pushes/deploys gated by a check) — are blended into the four AI-fluency competencies: Delegation {int(COMP_WEIGHTS['Delegation']*100)}%, Description {int(COMP_WEIGHTS['Description']*100)}%, Discernment {int(COMP_WEIGHTS['Discernment']*100)}%, Diligence {int(COMP_WEIGHTS['Diligence']*100)}%. The headline score is that weighted competency blend; competency levels use the framework's 1–5 rubric (Emerging → Expert).</p>
+    <p><b>Everything is a rate, then squashed.</b> Each signal is a per-prompt or per-opportunity rate run through min(1, rate/target), so doing more work never raises the score — only doing it better does.</p>
     <p><b>Thin signals are hedged, not faked.</b> Each dimension is pulled toward a neutral 50 in proportion to how many opportunities it had (e.g. Iteration had only {result['detail']['Iteration']['corrections']} corrections, so it is flagged “low data”). Both raw and confidence-adjusted scores are shown.</p>
     <p><b>Archetype</b> describes your <b>driving style</b>, not the collaboration's quality, so it is built on a separate <b>agency-weighted</b> vector: Briefing, Iteration, Toolcraft and Delegation (handoffs to subagents/background jobs/planning) count fully, while Verification and Context — habits Claude largely does on its own — are discounted ({int(AGENCY['Verification']*100)}% and {int(AGENCY['Context']*100)}% weight). It is the nearest prototype by cosine on z-scored values; if the top two are within {ARCHETYPE_MARGIN} we show a blend. <b>Active time</b> caps idle gaps at {GAP_CAP_SECONDS//60} min. <b>Fixes vs v1:</b> prompt mis-count, length inflation, idle-time over-count, random archetype, uncapped tool-diversity, and keyword “error” false-positives.</p>
     <p><b>Limits:</b> this measures observable behavior, not intent; detectors are heuristic and English-biased; it's a single snapshot, not a trend. Terse prompts that carry intent from the prior turn can under-score Direction.</p>
@@ -1552,44 +1761,50 @@ code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
 </div></body></html>"""
 
 
+# The framework's four competencies, with a level rubric each. The engine now scores
+# these DETERMINISTICALLY (see COMP_MIX); the AI stage layers judgment on top.
+_COMPETENCY_DEFS = [
+    ("Delegation", "Deciding what to hand to the AI and how — whole jobs, plans, sub-agents — versus doing it yourself.",
+     {1: "Work is mostly micro-stepped; the agent rarely gets a whole job or a plan.",
+      2: "Occasional whole hand-offs; sub-agents/planning appear but aren't habits.",
+      3: "Regularly hands the agent complete tasks; reaches for planning or background runs.",
+      4: "Deliberately splits work — whole jobs delegated, parallel/background where it pays.",
+      5: "Orchestrates fleets: plans, delegates and supervises multi-step work as a reflex."}),
+    ("Description", "Communicating what you want: the goal, the constraints, and what a good result looks like.",
+     {1: "Terse nudges; the agent guesses at scope, constraints and success.",
+      2: "Some prompts carry a file or a constraint; intent is stated occasionally.",
+      3: "Most action prompts name the goal plus an anchor (file, constraint or 'done when…').",
+      4: "Goal, constraints and acceptance criteria are routine; process/format stated when it matters.",
+      5: "Briefs read like tickets: product, process and performance all specified up front."}),
+    ("Discernment", "Evaluating what comes back — verifying results, grounding edits, correcting precisely.",
+     {1: "Output is accepted as-is; edits land blind and little is re-checked.",
+      2: "Checks happen sometimes; corrections are often just 'no, try again'.",
+      3: "Most edit-bursts get verified and corrections usually name what broke.",
+      4: "Verification is near-automatic; corrections carry the symptom and the rule.",
+      5: "Layered evaluation as a reflex — tests, grounding and surgical feedback."}),
+    ("Diligence", "Being responsible with what you ship — checking before it matters and cleaning up after.",
+     {1: "Work ships unchecked; commits/deploys follow edits with nothing run between.",
+      2: "Ships are sometimes gated by a check; cleanup is inconsistent.",
+      3: "Most commits/pushes happen after a verification; teardown usually happens.",
+      4: "Shipping is consistently gated; live systems are torn down as a habit.",
+      5: "Nothing leaves unverified — checks, cleanup and ownership are systematic."}),
+]
+
+
 def _skill_levels(result):
-    """Map dimension scores to L1-L5 skill levels with now/next text."""
-    def lvl(score):
-        return max(1, min(5, int(score // 20) + 1))
-    s = result["shrunk"]
-    defs = [
-        ("Briefing & specificity", "Direction",
-         "name a goal + one anchor (path, constraint, or acceptance test) in most action prompts",
-         {1: "Mostly short nudges with little context.", 2: "Occasional context; one constraint sometimes.",
-          3: "Most prompts carry a goal + one anchor.", 4: "Goal + constraint + criterion are common.",
-          5: "Consistently high-context with front-loaded rules."}),
-        ("Verification discipline", "Verification",
-         "end edit-bursts by running the tests / the app before moving on",
-         {1: "Edits accepted blind, almost no checks.", 2: "Verifies occasionally.",
-          3: "Verifies most bursts of edits.", 4: "Verifies nearly every change.",
-          5: "Verification is a reflex — stated up front and layered."}),
-        ("Context grounding (read→edit)", "Context",
-         "have the agent read the target file before changing it",
-         {1: "Often edits files it never read.", 2: "Reads before editing about half the time.",
-          3: "Usually points the agent at the right place first.", 4: "Routinely reads target + deps before changing.",
-          5: "Deliberate exploration before non-trivial changes."}),
-        ("Iteration & recovery", "Iteration",
-         "make corrections name a symptom + the exact rule, in one line",
-         {1: "Low-info rejections, long loops.", 2: "Corrects but vaguely.",
-          3: "Mixes precise and bare corrections.", 4: "Low correction rate, mostly specific.",
-          5: "Surgical feedback; turns misses into reusable rules."}),
-        ("Toolcraft & orchestration", "Toolcraft",
-         "reach past the shell — search, planning, delegation for the right jobs",
-         {1: "Effectively one tool.", 2: "The core trio (Bash/Read/Edit).",
-          3: "Adds search/web and some planning.", 4: "Comfortable with MCP + balanced spread.",
-          5: "20+ tools used appropriately, low concentration."}),
-    ]
+    """The measured 4D skill map: per competency, its deterministic level, where the
+    person is now, and the next move (the practice line of the weakest signal feeding
+    that competency — so the advice targets what actually held the level down)."""
     out = []
-    for name, dim, nxt, rub in defs:
-        L = lvl(s[dim])
-        out.append({"name": name, "dim": dim, "level": L, "now": rub[L],
-                    "what": SKILL_TEACH[dim]["what_it_is"],
-                    "next": nxt if L < 5 else "maintain this — it's a real strength."})
+    for name, what, rub in _COMPETENCY_DEFS:
+        comp = result["competencies"][name]
+        L = comp["level"]
+        weakest = min(COMP_MIX[name], key=lambda d: result["shrunk"][d])
+        nxt = (SKILL_TEACH[weakest]["practice"] if L < 5
+               else "maintain this — it's a real strength.")
+        out.append({"name": name, "level": L, "label": comp["label"],
+                    "score": round(comp["score"]), "conf": comp["conf"],
+                    "now": rub[L], "what": what, "next": nxt})
     return out
 
 
@@ -1730,6 +1945,12 @@ def main(argv=None):
         payload = {
             "overall": result["overall"], "overall_raw": result["overall_raw"],
             "band": result["band"], "archetype": result["archetype"]["label"],
+            "competencies": {
+                k: {"score": round(v["score"], 1), "raw": round(v["raw"], 1),
+                    "level": v["level"], "label": v["label"], "confidence": round(v["conf"], 2)}
+                for k, v in result["competencies"].items()
+            },
+            "competency_weights": COMP_WEIGHTS,
             "dimensions_raw": result["raw"], "dimensions_adjusted": result["shrunk"],
             "confidence": result["conf"], "detail": result["detail"],
             "data_ingested": {

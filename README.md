@@ -26,10 +26,10 @@ Python 3.8+ and Claude Code.
 
 ## 🚀 What you get
 
-- **A fluency score (0–100)** with a band — Operator → Developing → Proficient → Advanced → Expert — and what it means.
+- **A fluency score (0–100)** with a band — Operator → Developing → Proficient → Advanced → Expert — and what it means. The score **is** the AI Fluency framework, computed: the weighted blend of the four competencies below.
 - **Your builder archetype** — Autonomous Agent, Architect, Debugger, Collaborator, or Sprinter — picked from *your* behavior, not from keywords.
-- **A 4-competency skill map** — **Delegation · Description · Discernment · Diligence** (the AI Fluency framework) — each placed on a 1–5 level with one concrete next move.
-- **Five measured dimensions** behind the map — Briefing, Verification, Context-setting, Iteration, Toolcraft — each a defensible rate, not a vanity count.
+- **A 4-competency skill map** — **Delegation · Description · Discernment · Diligence** (the AI Fluency framework) — each **measured deterministically** on a 1–5 level with one concrete next move. The AI stage adds judgment on top; it never invents the levels.
+- **Seven measured signals** behind the map — Briefing, Verification, Context-setting, Iteration, Toolcraft, Delegation depth, and Ship-gating — each a defensible rate, not a vanity count.
 - **What / Where / How** — your top growth levers, each tied to real moments in your transcripts and (when you run the full skill) a rewrite of one of *your own* prompts.
 - **Full transparency** on the data: how many prompts you really typed (vs. tool output, subagent turns, and injected noise), projects, MB, and hands-on time — across **more than the 30 days Claude Code keeps on disk** (see below).
 
@@ -37,6 +37,13 @@ Python 3.8+ and Claude Code.
 
 The whole point is to measure *skill*, not activity — so a few things are deliberate:
 
+- **The score is the 4D framework, computed.** Seven behavioral signals are blended into
+  the four AI-fluency competencies — **Delegation 25% · Description 30% · Discernment 25%
+  · Diligence 20%** — and the headline score is that weighted competency blend. Delegation
+  is measured from real hand-off behavior (sub-agents / background runs / planning, plus
+  how many agent actions each hand-off buys before you have to steer again), and Diligence
+  from **ship-gating**: whether commits, pushes and deploys are gated by a check that ran
+  after the last edit. Neither is guessed by an LLM — both are counted.
 - **Everything is a rate, then saturated.** Each dimension is a per-prompt or
   per-opportunity rate run through `min(1, rate / target)`. Doing *more* of the same
   thing doesn't move the number — only doing it *better* does.
@@ -50,7 +57,8 @@ The whole point is to measure *skill*, not activity — so a few things are deli
 - **The score rates the *collaboration*; the archetype rates *you*.** The fluency score
   is the quality of you-and-Claude together — and that includes habits Claude often does
   on its own, like reading a file before editing (Context-setting) or running tests
-  (Verification), which are ~44% of the weight. Your **archetype** is built from a
+  (Verification), which are ~30% of the effective weight (they enter only through the
+  Discernment and Diligence competencies, at partial weight). Your **archetype** is built from a
   separate, *agency-weighted* vector that discounts those Claude-driven habits, so it
   reflects how *you* drive. The two can differ on purpose: a thorough agent lifts the
   collaboration score more than it lifts the archetype.
@@ -154,13 +162,14 @@ python3 insight.py                 # analyze ~/.claude/projects, then write + op
 ```
   AI Fluency Score: 78/100  (Advanced)
   Archetype: 🤖 Autonomous Agent
+  Competencies: Delegation L4 · Description L3 · Discernment L4 · Diligence L4
   Based on 156 real prompts across 16 projects, 156 sessions (53.8 MB).
   Archive: 156 sessions preserved at ~/.claude/insight-archive (0 new, 1 updated this run).
   Report: ai_fluency_report.html
 ```
 
 *(Illustrative — your numbers will differ.)* The HTML report adds the headline score ring,
-the four-competency skill map (your level and next move for each), the five dimensions,
+the measured four-competency skill map (your level and next move for each), the seven signals,
 your top growth levers with before/after rewrites, archetype affinity, a "how much data
 this is based on" breakdown, and a methodology appendix.
 
@@ -180,23 +189,38 @@ tests/                           # stdlib unittest (de-contamination, scoring, a
 
 ## 📈 What's measured
 
-### The four AI-fluency competencies (the skill map)
-Adapted from Anthropic's *AI Fluency: Frameworks & Foundations* (the 4 Ds):
+### The four AI-fluency competencies (the skill map — and the score)
+Adapted from Anthropic's *AI Fluency: Frameworks & Foundations* (the 4 Ds). Each is
+**computed deterministically** from the signals below, gets a 1–5 level on the framework's
+rubric (Emerging → Expert), and the headline score is their weighted blend:
 
-1. **Delegation** — deciding what to hand to the agent, and how to split the work.
-2. **Description** — telling the agent what you want (goal + constraint + acceptance test).
-3. **Discernment** — evaluating what comes back (verify, ground edits, correct precisely).
-4. **Diligence** — being responsible: verify before it ships, tear down, own the result.
+1. **Delegation** *(25%)* — deciding what to hand to the agent, and how to split the work.
+   Composed from the Delegation signal (45%), Toolcraft (35%), Briefing (20%).
+2. **Description** *(30%)* — telling the agent what you want (goal + constraint + acceptance test).
+   Composed from Briefing (80%) and Iteration (20%).
+3. **Discernment** *(25%)* — evaluating what comes back (verify, ground edits, correct precisely).
+   Composed from Verification (40%), Context-setting (35%), Iteration (25%).
+4. **Diligence** *(20%)* — being responsible: verify before it ships, tear down, own the result.
+   Composed from Ship-gating (45%), Verification (30%), Context-setting (25%).
 
-### The five dimensions behind the map (with weights)
-1. **Briefing / Direction** *(24%)* — how concretely you frame requests (constraint / artifact / intent rates).
-2. **Verification** *(22%)* — running tests / build / app after a burst of edits.
-3. **Context-setting** *(22%)* — grounding edits in a prior read, instead of blind edits.
-4. **Iteration** *(18%)* — correcting precisely instead of vague rejection.
-5. **Toolcraft** *(14%)* — reaching for a healthy range of tools, not forcing everything through one.
+### The seven measured signals behind the competencies
+1. **Briefing / Direction** — how concretely you frame requests (constraint / artifact /
+   intent rates, plus process- and performance-description cues: ordering the steps,
+   shaping the output).
+2. **Verification** — running tests / build / app after a burst of edits.
+3. **Context-setting** — grounding edits in a prior read, instead of blind edits.
+4. **Iteration** — correcting precisely instead of vague rejection.
+5. **Toolcraft** — reaching for a healthy range of tools, not forcing everything through one.
+6. **Delegation** — hand-offs per active hour (sub-agents / background runs / planning) and
+   hand-off *depth*: the median number of agent actions each action-prompt buys before you
+   steer again. Whole jobs run long; micro-steps hand back after one tool call.
+7. **Ship-gating** — when work leaves the machine (`git commit/push`, deploys, publishes),
+   was it gated by a check that ran after the last edit? No ship events → neutral and fully
+   hedged, never a penalty.
 
-(Verification and Context-setting are largely habits Claude drives on its own — counted in
-the collaboration score, discounted in the archetype.)
+(Verification and Context-setting are largely habits Claude drives on its own — they enter
+the score only through Discernment/Diligence at partial weight, and are further discounted
+in the archetype.)
 
 ### Archetypes (from *your* behavior, not keywords)
 - **🤖 Autonomous Agent** — delegates whole, end-to-end jobs and trusts the agent to run them.
