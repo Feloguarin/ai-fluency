@@ -405,6 +405,7 @@ class Corpus:
         self.first_ts = None
         self.last_ts = None
         self.active_seconds = 0.0
+        self.active_days = set()        # distinct calendar dates with any activity
         # Per-session ordered timelines of {"kind": "prompt"|"tool", ...}
         self.sessions = {}              # session_id -> {"project","timeline":[...]}
 
@@ -539,6 +540,7 @@ def parse(files):
                 ts = _parse_ts(e.get("timestamp"))
                 if ts:
                     ts_in_file.append(ts)
+                    c.active_days.add(ts.date())
                     c.first_ts = ts if c.first_ts is None or ts < c.first_ts else c.first_ts
                     c.last_ts = ts if c.last_ts is None or ts > c.last_ts else c.last_ts
                 msg = e.get("message") if isinstance(e.get("message"), dict) else {}
@@ -1454,7 +1456,9 @@ def build_evidence(corpus, result, cards, archive_info=None):
                 out.append(c)
         return out
 
-    span_days = (corpus.last_ts - corpus.first_ts).days if corpus.first_ts and corpus.last_ts else 0
+    # Distinct calendar days beats (last-first).days, which reads "0" for any
+    # single-day history no matter how many hours it spans.
+    span_days = len(corpus.active_days)
     a = result["archetype"]
     return {
         "schema": "claude-insight-evidence/1",
@@ -1742,7 +1746,9 @@ def build_html(corpus, result, cards, strength, archive_info=None, analysis=None
             'Every score below is still fully computed from your data; to add the AI-written '
             'skill map, re-run <code>/ai-fluency</code> inside Claude Code.'
             '</div></section>')
-    days = (corpus.last_ts - corpus.first_ts).days if corpus.first_ts and corpus.last_ts else 0
+    # Distinct calendar days with activity — never "(last-first).days", which shows
+    # "0 days" for a 20-hour single-day history and reads like a bug (it was one).
+    days = len(corpus.active_days)
     active_h = corpus.active_seconds / 3600
     filtered_total = sum(corpus.filtered.values())
     provisional = len(corpus.real_prompts) < PROVISIONAL_MIN_PROMPTS
@@ -1866,7 +1872,7 @@ def build_html(corpus, result, cards, strength, archive_info=None, analysis=None
                     f'between people would mix everyone\'s transcripts into a single report.')
         retention_note = (
             '<div class="honesty" style="margin-top:14px">'
-            f'<b>Why only ~{days} days?</b> Claude Code deletes transcripts older than your '
+            f'<b>Why only {days} day{"s" if days != 1 else ""} of history?</b> Claude Code deletes transcripts older than your '
             '<code>cleanupPeriodDays</code> setting (default <b>30</b>), so that is all that was '
             'left on disk to read — not a limit of this tool. To analyze more history: '
             '<b>(1)</b> raise <code>cleanupPeriodDays</code> in <code>~/.claude/settings.json</code> '
@@ -2224,8 +2230,8 @@ code{{background:var(--grid);padding:1px 6px;border-radius:5px;font-size:13px}}
   <div class="ingest">
     <div class="ing"><div class="n">{corpus.files}</div><div class="l">sessions read</div></div>
     <div class="ing"><div class="n">{len(corpus.projects)}</div><div class="l">projects</div></div>
-    <div class="ing"><div class="n">{corpus.total_bytes/1e6:.1f} MB</div><div class="l">transcript data</div></div>
-    <div class="ing"><div class="n">{days} days</div><div class="l">of activity</div></div>
+    <div class="ing"><div class="n">{corpus.total_bytes/1e6:.1f} MB</div><div class="l">of transcripts (mostly tool output)</div></div>
+    <div class="ing"><div class="n">{days} day{"s" if days != 1 else ""}</div><div class="l">with activity</div></div>
     <div class="ing"><div class="n">{len(corpus.real_prompts)}</div><div class="l">prompts you typed</div></div>
     <div class="ing"><div class="n">{active_h:.0f} h</div><div class="l">hands-on time</div></div>
     {archive_tile}

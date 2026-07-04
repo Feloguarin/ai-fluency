@@ -99,6 +99,34 @@ class TestNoVolumeInflation(unittest.TestCase):
         self.assertLessEqual(d2, d1 + 1.0)
 
 
+class TestActiveDays(unittest.TestCase):
+    """Regression: a 20-hour single-day session must report 1 day of activity, not 0
+    ((last-first).days is 0 for anything under 24h). Days = distinct calendar dates."""
+
+    def test_single_day_20h_span_is_one_day(self):
+        tmp = tempfile.mkdtemp()
+        write_session(tmp, "s.jsonl", [
+            user_text("start of a very long day", ts="2026-07-04T03:00:00Z"),
+            user_text("end of the same long day", ts="2026-07-04T23:00:00Z"),
+        ])
+        corpus = insight.parse(insight.discover_files(tmp))
+        self.assertEqual(len(corpus.active_days), 1)
+        result = insight.analyze(corpus)
+        cards, strength = insight.build_action_plan(corpus, result)
+        html = insight.build_html(corpus, result, cards, strength)
+        self.assertIn(">1 day</div>", html.replace("\n", ""))
+        self.assertNotIn("0 days", html)
+
+    def test_two_calendar_days_counted(self):
+        tmp = tempfile.mkdtemp()
+        write_session(tmp, "s.jsonl", [
+            user_text("late night", ts="2026-07-04T23:50:00Z"),
+            user_text("past midnight", ts="2026-07-05T00:10:00Z"),
+        ])
+        corpus = insight.parse(insight.discover_files(tmp))
+        self.assertEqual(len(corpus.active_days), 2)
+
+
 class TestActiveTimeCapsIdle(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
