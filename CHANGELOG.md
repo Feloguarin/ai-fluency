@@ -22,6 +22,19 @@ project aims for [Semantic Versioning](https://semver.org/).
   only when there is nothing of yours to build on, and stay labeled as generic.
 
 ### Added
+- **Archetype fit critique.** A label is a nearest match, never a perfect one — the
+  archetype card now reads the residuals out loud: the axis where you match your
+  prototype best ("where this label fits you") and the axis where you break it,
+  with your numbers vs the pattern's, plus a "hold the label loosely" note when
+  the gap is large. The Opus stage gains a required `profile` section: a second
+  opinion on the computed archetype (agree/partly/disagree), what it gets right,
+  what it misses, and your real pattern named in plain words, cited from your
+  prompts.
+- **🎬 Director archetype** — delegates whole outcomes, steers at the level of
+  intent, inspects like QA. Previously this profile was misfiled as Debugger.
+- **Delegation now credits whole-job *prompts*, not just delegation tools:** a
+  hand-off whose run covered a full look→change→check cycle counts, so a director
+  who never touches plan-mode still measures as delegating.
 - **Owned vs borrowed habits (driver share).** The score deliberately rates the
   collaboration (you + Claude) — that *is* fluency when you always work with an
   agent. What's now measured on top is **who initiates** each check and each read:

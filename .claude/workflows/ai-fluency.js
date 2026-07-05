@@ -53,9 +53,20 @@ const SKILL_ENTRY = {
 
 const ANALYSIS = {
   type: 'object', additionalProperties: false,
-  required: ['overall_read', 'skill_map', 'top_growth', 'strengths'],
+  required: ['overall_read', 'profile', 'skill_map', 'top_growth', 'strengths'],
   properties: {
     overall_read: { type: 'string' },
+    profile: {
+      type: 'object', additionalProperties: false,
+      required: ['archetype_verdict', 'gets_right', 'misses', 'your_real_pattern', 'pattern_why'],
+      properties: {
+        archetype_verdict: { type: 'string', enum: ['agree', 'partly', 'disagree'] },
+        gets_right: { type: 'string', description: 'what the computed archetype label genuinely captures about this person, with evidence' },
+        misses: { type: 'string', description: 'where this person breaks the label, with evidence (use archetype.fit residuals + real prompts)' },
+        your_real_pattern: { type: 'string', description: 'their actual pattern named in plain words, e.g. "a director: delegates outcomes, inspects like QA"' },
+        pattern_why: { type: 'string', description: '1-2 sentences citing their real prompts/behavior' },
+      },
+    },
     skill_map: { type: 'array', items: SKILL_ENTRY, minItems: 4, maxItems: 4 },
     top_growth: {
       type: 'array',
@@ -117,8 +128,15 @@ const analystPrompt =
   `the score rates the collaboration by design, so treat a Claude-carried habit as real but BORROWED — ` +
   `name it that way and make owning it a growth move when the user-share is low. ` +
   `Produce the final assessment per the framework's OUTPUT CONTRACT: ` +
-  `an overall_read, a skill_map with EXACTLY the four competencies (Delegation, Description, Discernment, ` +
-  `Diligence) in that order, top_growth, and strengths. ` +
+  `an overall_read, a profile, a skill_map with EXACTLY the four competencies (Delegation, Description, ` +
+  `Discernment, Diligence) in that order, top_growth, and strengths. ` +
+  `\n\nThe profile is a SECOND OPINION on the computed archetype, written like a senior observer who ` +
+  `actually read their prompts. The evidence's archetype block gives you the label, per-axis scores, the ` +
+  `fit residuals (where they match the prototype, where they break it) and every prototype definition. ` +
+  `Judge the label against their REAL prompts: say what it genuinely captures (gets_right), where they ` +
+  `break it (misses — e.g. the label expects low delegation but every prompt of theirs is a whole-job ` +
+  `hand-off), then NAME their actual pattern in plain words (your_real_pattern) even if it matches no ` +
+  `prototype, and ground it in quotes (pattern_why). Never restate the label's blurb; add information. ` +
   `\n\nThe top_growth section is the heart of the report — it is rendered as this person's "how to grow" ` +
   `cards, so it MUST be fully custom, never generic advice. Produce 3 items (2 only if the data is thin). ` +
   `For each: a sharp, specific title; a "why" that cites THIS person's own numbers/pattern (e.g. their ` +

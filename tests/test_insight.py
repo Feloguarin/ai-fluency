@@ -932,6 +932,80 @@ class TestEpisodeMining(unittest.TestCase):
         self.assertEqual(len(ev["behavior"]["episodes"]["correction_loops"]), 1)
 
 
+class TestArchetypeIntelligence(unittest.TestCase):
+    """The profile layer must be specific, not general: whole-job PROMPTS count as
+    delegation, a delegate-and-verify user gets the Director label, and the report
+    always says where the label fits and where this person breaks it."""
+
+    def test_whole_job_prompt_counts_as_delegation(self):
+        # Same single hand-off; a full look->change->check run must outscore edit-only.
+        full = [user_text("add rate limiting to server.py and prove it works"),
+                assistant_tool("Read", file_path="/x/server.py"),
+                assistant_tool("Edit", file_path="/x/server.py"),
+                assistant_tool("Bash", command="python -m pytest -q")]
+        editonly = [user_text("add rate limiting to server.py and prove it works"),
+                    assistant_tool("Edit", file_path="/x/server.py"),
+                    assistant_tool("Edit", file_path="/x/server.py"),
+                    assistant_tool("Edit", file_path="/x/server.py")]
+        t1, t2 = tempfile.mkdtemp(), tempfile.mkdtemp()
+        write_session(t1, "s.jsonl", full)
+        write_session(t2, "s.jsonl", editonly)
+        s1, d1, _ = insight.score_delegation(insight.parse(insight.discover_files(t1)))
+        s2, d2, _ = insight.score_delegation(insight.parse(insight.discover_files(t2)))
+        self.assertEqual(d1["whole_job_rate"], 1.0)
+        self.assertEqual(d2["whole_job_rate"], 0.0)
+        self.assertGreater(s1, s2)
+
+    def test_delegate_and_verify_reads_as_director(self):
+        dims = {"Direction": 62, "Verification": 88, "Context": 72,
+                "Iteration": 84, "Toolcraft": 68}
+        a = insight.classify_archetype(dims, delegation_score=86)
+        self.assertEqual(a["primary"], "Director")
+
+    def test_fit_critique_always_present_in_report(self):
+        tmp = tempfile.mkdtemp()
+        write_session(tmp, "s.jsonl", [
+            user_text("add a /health endpoint to server.py, only that file, so the LB can probe it"),
+            assistant_tool("Read", file_path="/x/server.py"),
+            assistant_tool("Edit", file_path="/x/server.py"),
+            assistant_tool("Bash", command="python -m pytest -q"),
+        ])
+        corpus = insight.parse(insight.discover_files(tmp))
+        result = insight.analyze(corpus)
+        self.assertIn("fit", result["archetype"])
+        cards, strength = insight.build_action_plan(corpus, result)
+        html = insight.build_html(corpus, result, cards, strength)
+        self.assertIn("Where this label fits you", html)
+        self.assertIn("Where you break it", html)
+
+    def test_ai_profile_second_opinion_renders(self):
+        tmp = tempfile.mkdtemp()
+        write_session(tmp, "s.jsonl", [
+            user_text("add a /health endpoint to server.py, only that file, so the LB can probe it")])
+        analysis = {
+            "overall_read": "read",
+            "profile": {"archetype_verdict": "partly",
+                        "gets_right": "You verify relentlessly.",
+                        "misses": "You delegate whole outcomes — the label expects micro-stepping.",
+                        "your_real_pattern": "REAL-PATTERN-TOKEN: a director",
+                        "pattern_why": "every prompt hands off a whole job"},
+            "skill_map": [{"competency": "Delegation", "level": 4, "level_label": "Advanced",
+                           "summary": "s", "evidence": ["e"], "next_move": "n"}],
+            "top_growth": [], "strengths": [],
+        }
+        ap = os.path.join(tmp, "an.json")
+        with open(ap, "w", encoding="utf-8") as fh:
+            json.dump(analysis, fh)
+        out = os.path.join(tmp, "r.html")
+        rc = insight.main([tmp, "--analysis", ap, "--no-open", "-o", out])
+        self.assertEqual(rc, 0)
+        with open(out, encoding="utf-8") as fh:
+            html = fh.read()
+        self.assertIn("Second opinion on your archetype", html)
+        self.assertIn("REAL-PATTERN-TOKEN", html)
+        self.assertIn("the label is half right", html)
+
+
 class TestDriverShare(unittest.TestCase):
     """Owned vs borrowed habits: the score rates the collaboration by design, but we
     measure who INITIATES the checks/reads so borrowed discipline is named, the

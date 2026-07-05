@@ -257,6 +257,7 @@ in the archetype.)
 - **🐛 Debugger** — methodical: read to diagnose, change, verify, repeat.
 - **🤝 Collaborator** — works with the agent like a teammate: asks for options, gives feedback.
 - **⚡ Sprinter** — fast and direct, terse prompts, low ceremony; verification is the growth edge.
+- **🎬 Director** — hands over whole outcomes, steers at the level of intent, and holds every result to a hard acceptance test.
 
 The archetype is the nearest match to your **agency-weighted** behavior vector — it counts
 what *you* do (briefing, correcting, tool choice, delegation) and discounts the

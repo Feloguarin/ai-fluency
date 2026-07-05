@@ -320,6 +320,8 @@ PROTOTYPES = {
         "blurb": "You work with the agent like a teammate — ask for options, give feedback, and steer toward alignment."},
     "Sprinter":         {"emoji": "⚡", "vec": [45, 38, 52, 46, 62, 30],
         "blurb": "You move fast and direct — terse prompts, quick turns, low ceremony. Great velocity; briefing and verification are the growth edges."},
+    "Director":         {"emoji": "🎬", "vec": [66, 85, 70, 82, 70, 85],
+        "blurb": "You hand over whole outcomes, steer at the level of intent, and hold every result to a hard acceptance test — you delegate like a lead and inspect like QA."},
 }
 ARCHETYPE_MARGIN = 0.06   # cosine-similarity margin below which we emit a blended label
 
@@ -837,46 +839,70 @@ def score_toolcraft(corpus):
     return score, detail, []
 
 
+def _tool_kind(name):
+    if name in READ_TOOLS:
+        return "look"
+    if name in EDIT_TOOLS:
+        return "change"
+    if name == "bash":
+        return "check"
+    return "other"
+
+
 def score_delegation(corpus):
     """Delegation as the framework defines it: handing the agent WHOLE jobs, not
-    micro-steps. Two rate-based parts:
+    micro-steps. Three rate-based parts:
       * hand-off events per active hour (sub-agents, background runs, planning) —
         path awareness;
       * hand-off depth — the median number of agent actions each action-prompt buys
-        before the user has to steer again. A whole job runs long on its own; a
-        micro-step hands back after one tool call.
-    Both are rates, so doing MORE of the same never raises the score."""
+        before the user has to steer again;
+      * whole-job rate — the share of hand-offs whose run covered a full
+        look→change→check cycle. This credits delegation done in PROMPTS ("build X
+        and verify it"), not just delegation done with tools — a director who never
+        touches plan-mode still delegates.
+    All rates, so doing MORE of the same never raises the score."""
     run_lengths = []
+    whole_jobs = 0
     micro_examples = []
     for sid, project, timeline in _iter_sessions(corpus):
         cur = None      # the action prompt whose run we're counting
         count = 0
+        kinds = set()
+
+        def close_run():
+            nonlocal whole_jobs
+            run_lengths.append(count)
+            if len(kinds - {"other"}) >= 3 or count >= 6:
+                whole_jobs += 1
+            if count <= 1:
+                micro_examples.append({"session": sid, "project": project,
+                                       "text": cur["text"]})
+
         for ev in timeline:
             if ev["kind"] == "prompt":
                 if cur is not None:
-                    run_lengths.append(count)
-                    if count <= 1:
-                        micro_examples.append({"session": sid, "project": project,
-                                               "text": cur["text"]})
+                    close_run()
                 cur = ev if _is_action_prompt(ev["text"]) else None
                 count = 0
+                kinds = set()
             elif cur is not None:
                 count += 1
+                kinds.add(_tool_kind(ev["name"]))
         if cur is not None:
-            run_lengths.append(count)
-            if count <= 1:
-                micro_examples.append({"session": sid, "project": project, "text": cur["text"]})
+            close_run()
     n = len(run_lengths)
     if n == 0:
         return 50.0, {"n": 0, "delegation_events": corpus.delegation_events,
-                      "events_per_hour": 0.0, "median_run": 0}, []
+                      "events_per_hour": 0.0, "median_run": 0, "whole_job_rate": None}, []
     active_hours = max(corpus.active_seconds / 3600, 0.5)
     eph = corpus.delegation_events / active_hours
     median_run = statistics.median(run_lengths)
     depth = squash(median_run, 6)
-    score = 100 * (0.5 * squash(eph, 2.0) + 0.5 * depth)
+    whole_rate = whole_jobs / n
+    score = 100 * (0.35 * squash(eph, 2.0) + 0.35 * depth + 0.30 * squash(whole_rate, 0.5))
     detail = {"n": n, "delegation_events": corpus.delegation_events,
-              "events_per_hour": round(eph, 2), "median_run": round(median_run, 1)}
+              "events_per_hour": round(eph, 2), "median_run": round(median_run, 1),
+              "whole_job_rate": round(whole_rate, 2)}
     return score, detail, micro_examples[:4]
 
 
@@ -1292,9 +1318,24 @@ def classify_archetype(dim_scores, delegation_score, agency=None):
     blended = (top_sim - second_sim) < ARCHETYPE_MARGIN
     second_short = second.replace("The ", "")
     article = "an" if second_short[:1] in "AEIOU" else "a"
+
+    # Fit critique: the label is a nearest match, never a perfect one — read out the
+    # residuals so the report can say what the label gets right and where this person
+    # breaks it, with numbers. Weighted by agency so Claude-driven axes don't dominate.
+    proto = PROTOTYPES[top]["vec"]
+    gaps = [(agency[ax] * abs(V[i] - proto[i]), ax, round(V[i]), proto[i])
+            for i, ax in enumerate(ARCHETYPE_AXES)]
+    _, fit_ax, fit_you, fit_proto = min(gaps)
+    miss_gap, miss_ax, miss_you, miss_proto = max(gaps)
+    fit = {
+        "right": {"axis": fit_ax, "you": fit_you, "proto": fit_proto},
+        "miss": {"axis": miss_ax, "you": miss_you, "proto": miss_proto,
+                 "big": miss_gap >= 20},
+    }
     return {
         "primary": top, "primary_sim": top_sim, "secondary": second, "secondary_sim": second_sim,
         "blended": blended, "all": sims, "delegation_score": round(delegation_score),
+        "axes": {ax: round(V[i]) for i, ax in enumerate(ARCHETYPE_AXES)}, "fit": fit,
         "label": f"{PROTOTYPES[top]['emoji']} {top}" + (f", with {article} {second_short} streak" if blended else ""),
         "blurb": PROTOTYPES[top]["blurb"],
     }
@@ -1502,7 +1543,10 @@ def build_evidence(corpus, result, cards, archive_info=None):
         ],
         "dimension_detail": result["detail"],
         "archetype": {"primary": a["primary"], "secondary": a["secondary"],
-                      "blended": a.get("blended")},
+                      "blended": a.get("blended"), "similarities": a.get("all"),
+                      "axes": a.get("axes"), "fit": a.get("fit"),
+                      "prototype_definitions": {k: {"vec": v["vec"], "blurb": v["blurb"]}
+                                                for k, v in PROTOTYPES.items()}},
         "behavior": {
             "sample_prompts": sample,
             "weak_examples": {c["dim"]: clean_ex(c["weak"]) for c in cards},
@@ -1550,6 +1594,22 @@ def _analysis_section_html(analysis):
     read = analysis.get("overall_read") or analysis.get("summary")
     if read:
         parts.append(f'<p class="assess">{_esc(read)}</p>')
+    # Second opinion on the computed archetype: the analyst reads the actual prompts,
+    # so it can say what the label gets right, where this person breaks it, and name
+    # their real pattern in plain words.
+    prof = analysis.get("profile")
+    if isinstance(prof, dict) and prof.get("your_real_pattern"):
+        verdict = str(prof.get("archetype_verdict", "partly")).lower()
+        v_txt = {"agree": "the label fits", "partly": "the label is half right",
+                 "disagree": "the label misses you"}.get(verdict, "the label is half right")
+        parts.append(
+            '<div class="dim"><div class="dim-h"><b>Second opinion on your archetype</b>'
+            f'<span class="pill">{_esc(v_txt)}</span></div>'
+            + (f'<p><b>What it gets right:</b> {_esc(prof.get("gets_right", ""))}</p>' if prof.get("gets_right") else "")
+            + (f'<p><b>What it misses:</b> {_esc(prof.get("misses", ""))}</p>' if prof.get("misses") else "")
+            + f'<p class="next"><b>Your real pattern:</b> {_esc(prof["your_real_pattern"])}'
+            + (f' — {_esc(prof.get("pattern_why", ""))}' if prof.get("pattern_why") else "") + '</p>'
+            + '</div>')
     for s in analysis.get("skill_map") or []:
         if not isinstance(s, dict):
             continue
@@ -1657,6 +1717,7 @@ ARCH_PATHS = {
     "Debugger": "Your diagnostic discipline is excellent — capture each fix as a small reusable rule so the same bug never costs you twice.",
     "Collaborator": "Your back-and-forth keeps things aligned — front-loading a constraint or two will get you there in fewer rounds.",
     "Sprinter": "Your speed is real — a one-line brief plus a quick test keeps that speed from turning into rework.",
+    "Director": "You already delegate and verify like a lead — the next gain is briefing depth: one sentence of intent plus a 'done when…' per hand-off, and your acceptance passes get shorter.",
 }
 
 _SIG_DESC = {
@@ -1781,8 +1842,10 @@ def build_html(corpus, result, cards, strength, archive_info=None, analysis=None
             return (f"{det.get('distinct', 0)} different tools · spread {det.get('evenness', 0.0):.2f} "
                     f"(1 = perfectly even) · {det.get('delegation_events', 0)} hand-offs")
         if name == "Delegation":
+            wj = det.get("whole_job_rate")
+            wj_txt = f" · {wj*100:.0f}% of hand-offs ran a full look→change→check cycle" if wj is not None else ""
             return (f"{det.get('delegation_events', 0)} hand-offs ({det.get('events_per_hour', 0.0)}/active hour) · "
-                    f"a handed-off task runs {det.get('median_run', 0)} agent actions before you steer again")
+                    f"a handed-off task runs {det.get('median_run', 0)} agent actions before you steer again{wj_txt}")
         if name == "Shipping":
             if det.get("rate") is None:
                 return "nothing shipped in these sessions — nothing to grade, so this stays neutral"
@@ -2004,6 +2067,20 @@ def build_html(corpus, result, cards, strength, archive_info=None, analysis=None
         {receipt}
       </div>"""
 
+    # No label fits anyone perfectly — read the residuals out loud: the axis where
+    # this person matches their archetype best, and the axis where they break it.
+    arch_fit_html = ""
+    fit = a.get("fit")
+    if fit:
+        r, m = fit["right"], fit["miss"]
+        hold = (" So hold the label loosely — the written read below resolves the tension."
+                if m.get("big") else "")
+        arch_fit_html = (
+            f'<p class="fine"><b>Where this label fits you:</b> {_esc(disp(r["axis"]))} — you measure '
+            f'{r["you"]}/100 and the {_esc(a["primary"])} pattern sits at {r["proto"]}. '
+            f'<b>Where you break it:</b> {_esc(disp(m["axis"]))} — the pattern expects {m["proto"]}, '
+            f'you measure {m["you"]}.{hold}</p>')
+
     prov_banner = ""
     if provisional:
         prov_banner = (f'<div class="prov">⚠️ Provisional: only {len(corpus.real_prompts)} real prompts found — '
@@ -2186,9 +2263,10 @@ code{{background:var(--grid);padding:1px 6px;border-radius:5px;font-size:13px}}
   </div>
   <div class="arch">
     <div class="emoji">{PROTOTYPES[a['primary']]['emoji']}</div>
-    <h2>{_esc(a['label'])}</h2>
+    <h2>{_esc(a['label'].replace(PROTOTYPES[a['primary']]['emoji'] + ' ', '', 1))}</h2>
     <p>{_esc(a['blurb'])}</p>
-    <p class="fine">This describes how <b>you</b> drive — your asks, corrections, tool choices and hand-offs ({a['delegation_score']}/100 on handing off). It deliberately ignores the read-first and run-the-tests habits Claude does on its own. The score above rates the two of you together; this rates you.</p>
+    {arch_fit_html}
+    <p class="fine">This describes how <b>you</b> drive — your asks, corrections, tool choices and hand-offs ({a['delegation_score']}/100 on handing off). It discounts the habits Claude carries on its own (measured, not assumed). The score above rates the two of you together; this rates you.</p>
     {arch_hedge}
   </div>
 </div>
