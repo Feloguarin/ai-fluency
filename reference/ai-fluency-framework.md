@@ -64,16 +64,24 @@ a coding transcript; weight the *responsibility* angle — did they check before
 
 ## How engine signals map onto the 4Ds
 
-`insight.py` reports five dimensions + a Delegation axis. Map them like this:
+`insight.py` measures seven signals and **already blends them into deterministic
+competency scores** (`scores.competencies` in the evidence bundle — score, level 1–5,
+label, confidence). Your job is judgment and direction *around* those numbers, not
+re-deriving them: reconcile your level with the computed one, and if you deviate,
+say why from the evidence. The blend:
 
-| Engine signal (dimension) | Primary 4D competency | Also informs |
+| Engine signal | Primary 4D competency | Also informs |
 |---|---|---|
-| **Briefing / Direction** (constraint, artifact, intent rates) | Description | Delegation (problem awareness) |
-| **Delegation axis** (hand-offs / hr: sub-agents, background, planning) | Delegation | — |
-| **Toolcraft** (tool breadth, evenness, orchestration) | Delegation (platform & path) | — |
-| **Verification** (tests/build/run after edits; teardown) | Discernment | Diligence |
-| **Context-setting** (read-before-edit grounding) | Discernment | Diligence |
-| **Iteration** (correction rate + specificity) | Description (re-description) | Discernment |
+| **Briefing / Direction** (constraint, artifact, intent + process/performance cues) | Description (80%) | Delegation (20% — problem awareness) |
+| **Delegation** (hand-offs / hr + median agent actions per hand-off) | Delegation (45%) | — |
+| **Toolcraft** (tool breadth, evenness, orchestration) | Delegation (35% — platform & path) | — |
+| **Verification** (tests/build/run after edits; teardown) | Discernment (40%) | Diligence (30%) |
+| **Context-setting** (read-before-edit grounding) | Discernment (35%) | Diligence (25%) |
+| **Iteration** (correction rate + specificity) | Description (20% — re-description) | Discernment (25%) |
+| **Ship-gating** (commits/pushes/deploys gated by a post-edit check) | Diligence (45%) | — |
+
+The overall score is the weighted competency blend: Delegation 25% · Description 30% ·
+Discernment 25% · Diligence 20%.
 
 Two cautions the analyst must respect:
 - **Agency.** Verification and Context grounding are habits Claude often performs on

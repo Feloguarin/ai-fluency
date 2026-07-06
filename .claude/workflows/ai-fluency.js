@@ -18,10 +18,10 @@ const EV = (args && args.evidence) || '~/.claude/insight/evidence.json'
 const FW = (args && args.framework) || '~/.claude/skills/ai-fluency/reference/ai-fluency-framework.md'
 
 const COMPETENCIES = [
-  { key: 'Delegation',  focus: 'What they hand to the agent vs keep, and how they split work: end-to-end hand-offs vs micro-stepping, sub-agents / background jobs / planning, tool breadth (platform & path awareness). Signals: delegation_events, tool_usage, scope of prompts.' },
-  { key: 'Description',  focus: 'How concretely they brief the agent: do action prompts name a file/error (artifact), carry a constraint, and state a why/acceptance test? Terse offloading vs front-loaded specific briefs. Signals: Direction detail (constraint/artifact/intent rates) + sample prompts.' },
-  { key: 'Discernment',  focus: 'How they evaluate outputs: verification after edit-bursts (tests/build/run), grounding edits in a prior read, correcting precisely (symptom + rule) vs vague rejection. Signals: Verification, Context, Iteration detail. NOTE agency: verification/grounding are partly Claude-driven — credit the USER moderately.' },
-  { key: 'Diligence',    focus: 'Responsibility: verifying before things go live, tearing down what was spun up, owning the result rather than blind-shipping. In a coding transcript this overlaps Discernment — weight the responsibility angle. Signals: verification teardown bonus, grounded edits.' },
+  { key: 'Delegation',  focus: 'What they hand to the agent vs keep, and how they split work: end-to-end hand-offs vs micro-stepping, sub-agents / background jobs / planning, tool breadth (platform & path awareness). Signals: Delegation detail (events_per_hour, median_run — agent actions each hand-off buys), delegation_events, tool_usage, scope of prompts. The engine already computed a deterministic Delegation competency score in scores.competencies — reconcile with it.' },
+  { key: 'Description',  focus: 'How concretely they brief the agent: do action prompts name a file/error (artifact), carry a constraint, state a why/acceptance test, and shape the process/output (process_rate, performance_rate)? Terse offloading vs front-loaded specific briefs. Signals: Direction detail + sample prompts. Reconcile with scores.competencies.Description.' },
+  { key: 'Discernment',  focus: 'How they evaluate outputs: verification after edit-bursts (tests/build/run), grounding edits in a prior read, correcting precisely (symptom + rule) vs vague rejection. Signals: Verification, Context, Iteration detail. NOTE agency: scores.driver_share measures who initiates the checks/reads — if the user-share is low the habit is real but BORROWED (Claude-carried); say so. Reconcile with scores.competencies.Discernment.' },
+  { key: 'Diligence',    focus: 'Responsibility: SHIP-GATING is the core observable — were commits/pushes/deploys gated by a check that ran after the last edit (Shipping detail: gated of ships)? Plus teardown of what was spun up and owning the result rather than blind-shipping. Signals: Shipping detail, verification teardown bonus, grounded edits. Reconcile with scores.competencies.Diligence.' },
 ]
 
 const FINDING = {
@@ -53,9 +53,20 @@ const SKILL_ENTRY = {
 
 const ANALYSIS = {
   type: 'object', additionalProperties: false,
-  required: ['overall_read', 'skill_map', 'top_growth', 'strengths'],
+  required: ['overall_read', 'profile', 'skill_map', 'top_growth', 'strengths'],
   properties: {
     overall_read: { type: 'string' },
+    profile: {
+      type: 'object', additionalProperties: false,
+      required: ['archetype_verdict', 'gets_right', 'misses', 'your_real_pattern', 'pattern_why'],
+      properties: {
+        archetype_verdict: { type: 'string', enum: ['agree', 'partly', 'disagree'] },
+        gets_right: { type: 'string', description: 'what the computed archetype label genuinely captures about this person, with evidence' },
+        misses: { type: 'string', description: 'where this person breaks the label, with evidence (use archetype.fit residuals + real prompts)' },
+        your_real_pattern: { type: 'string', description: 'their actual pattern named in plain words, e.g. "a director: delegates outcomes, inspects like QA"' },
+        pattern_why: { type: 'string', description: '1-2 sentences citing their real prompts/behavior' },
+      },
+    },
     skill_map: { type: 'array', items: SKILL_ENTRY, minItems: 4, maxItems: 4 },
     top_growth: {
       type: 'array',
@@ -111,16 +122,32 @@ const analystPrompt =
   `${READ}\n\nYou are the senior AI-fluency assessor (write like a kind, exacting teacher). ` +
   `Four Sonnet explorers produced these competency findings:\n\n${findingsJson}\n\n` +
   `Reconcile them with the deterministic scores in the evidence bundle and the framework's level ` +
-  `rubric and "what good looks like". Produce the final assessment per the framework's OUTPUT CONTRACT: ` +
-  `an overall_read, a skill_map with EXACTLY the four competencies (Delegation, Description, Discernment, ` +
-  `Diligence) in that order, top_growth, and strengths. ` +
+  `rubric and "what good looks like". The bundle's top-level "insights" are pattern-observations already ` +
+  `grounded in this person's data (with their numbers) — build on them, don't contradict them without ` +
+  `evidence. scores.driver_share says who actually initiates the checking/reading (the user or Claude): ` +
+  `the score rates the collaboration by design, so treat a Claude-carried habit as real but BORROWED — ` +
+  `name it that way and make owning it a growth move when the user-share is low. ` +
+  `Produce the final assessment per the framework's OUTPUT CONTRACT: ` +
+  `an overall_read, a profile, a skill_map with EXACTLY the four competencies (Delegation, Description, ` +
+  `Discernment, Diligence) in that order, top_growth, and strengths. ` +
+  `\n\nThe profile is a SECOND OPINION on the computed archetype, written like a senior observer who ` +
+  `actually read their prompts. The evidence's archetype block gives you the label, per-axis scores, the ` +
+  `fit residuals (where they match the prototype, where they break it) and every prototype definition. ` +
+  `Judge the label against their REAL prompts: say what it genuinely captures (gets_right), where they ` +
+  `break it (misses — e.g. the label expects low delegation but every prompt of theirs is a whole-job ` +
+  `hand-off), then NAME their actual pattern in plain words (your_real_pattern) even if it matches no ` +
+  `prototype, and ground it in quotes (pattern_why). Never restate the label's blurb; add information. ` +
   `\n\nThe top_growth section is the heart of the report — it is rendered as this person's "how to grow" ` +
   `cards, so it MUST be fully custom, never generic advice. Produce 3 items (2 only if the data is thin). ` +
   `For each: a sharp, specific title; a "why" that cites THIS person's own numbers/pattern (e.g. their ` +
   `constraint rate, a habit you saw); a concrete "how"; and the before/after where example_before is a ` +
   `REAL prompt they actually wrote (copy it VERBATIM from the evidence's sample_prompts or weak_examples — ` +
   `do not invent or paraphrase it) and example_after is your tailored rewrite of THAT exact prompt, ready ` +
-  `to paste, fixing the specific gap. Pack it with signal: name their files, tools, projects, and phrasing. ` +
+  `to paste, fixing the specific gap. behavior.episodes is your strongest material — correction loops with ` +
+  `their real prompts and the turns/minutes they cost, blind re-edits, unverified ships followed by fix ` +
+  `commits, and their own best brief/correction. Anchor the "why" of each growth item in one of those ` +
+  `moments when one exists ("this loop cost you ~N minutes"), and use best_brief/best_correction to show ` +
+  `them they already know the target shape. Pack it with signal: name their files, tools, projects, and phrasing. ` +
   `If two growth items would share the same before/after, replace one so no example repeats. ` +
   `Respect agency (discount Claude-driven habits) and confidence (hedge thin signals). ` +
   `Every claim — and every example_before — must be grounded in the evidence.`

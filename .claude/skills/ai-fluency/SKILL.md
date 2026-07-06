@@ -1,6 +1,6 @@
 ---
 name: ai-fluency
-description: Analyze how the developer collaborates with Claude Code and produce an "AI fluency" skill map — overall score, archetype, the four AI-fluency competencies (Delegation, Description, Discernment, Diligence), the five measured dimensions, and clear what/where/how direction. Use when the user asks to analyze their Claude Code usage, AI fluency, builder profile, prompting style, or "how do I use Claude / AI", or runs /ai-fluency.
+description: Analyze how the developer collaborates with Claude Code and produce an "AI fluency" skill map — overall score, archetype, the four deterministically measured AI-fluency competencies (Delegation, Description, Discernment, Diligence), the seven measured signals, and clear what/where/how direction. Use when the user asks to analyze their Claude Code usage, AI fluency, builder profile, prompting style, or "how do I use Claude / AI", or runs /ai-fluency.
 argument-hint: "[PATH | --no-open]"
 allowed-tools: Bash(python3 *), Read, Write, Workflow
 ---
