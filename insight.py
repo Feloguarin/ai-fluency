@@ -1674,6 +1674,132 @@ def _growth_cards_html(analysis):
 
 
 # --------------------------------------------------------------------------- #
+# Progress loop — the report remembers what it told you to work on, and the next
+# run opens with the deltas ("you were working on ship-gating: 40% -> 80%"). A
+# diagnosis without follow-up is a poster; this is what makes it a coach.
+# State is scores-only (no prompts), lives outside any repo, and is written only
+# on default runs — explicit-path runs (tests, one-offs) never touch it.
+# --------------------------------------------------------------------------- #
+
+DEFAULT_STATE_PATH = "~/.claude/insight/progress.json"
+PROGRESS_KEEP_RUNS = 24
+
+# Per-signal follow-up metric: the one rate the "this week" practice targets,
+# with the plain-English label the delta line uses.
+_SIGNAL_METRIC = {
+    "Direction": ("constraint_rate", "prompts that set a limit"),
+    "Verification": ("rate", "edit rounds that got checked"),
+    "Context": ("rate", "changes grounded in a prior read"),
+    "Iteration": ("specificity", "corrections that said exactly what broke"),
+    "Toolcraft": ("evenness", "tool spread"),
+    "Delegation": ("whole_job_rate", "hand-offs that ran a full look→change→check cycle"),
+    "Shipping": ("rate", "ships gated by a check"),
+}
+
+
+def _progress_snapshot(result, corpus, cards):
+    signals = {}
+    for name, (key, _label) in _SIGNAL_METRIC.items():
+        v = result["detail"].get(name, {}).get(key)
+        signals[name] = round(v, 3) if isinstance(v, (int, float)) else None
+    return {
+        "as_of": corpus.last_ts.isoformat() if corpus.last_ts else None,
+        "overall": result["overall"], "band": result["band"],
+        "competencies": {k: round(v["score"]) for k, v in result["competencies"].items()},
+        "signals": signals,
+        "top_moves": [c["dim"] for c in cards[:2]],
+        "prompts": len(corpus.real_prompts),
+        "fingerprint": result.get("fingerprint"),
+    }
+
+
+def load_progress(path):
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) and isinstance(d.get("runs"), list) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def save_progress(path, prev, snap):
+    """Append this run's snapshot (skipping exact re-runs of the same data) and keep
+    the last PROGRESS_KEEP_RUNS. Atomic write; failures never break the report."""
+    runs = list((prev or {}).get("runs") or [])
+    if runs and runs[-1].get("fingerprint") == snap.get("fingerprint"):
+        return
+    runs.append(snap)
+    runs = runs[-PROGRESS_KEEP_RUNS:]
+    p = os.path.expanduser(path)
+    tmp = p + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"schema": "claude-insight-progress/1", "runs": runs}, f, indent=1)
+        os.replace(tmp, p)
+    except OSError:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def build_progress_html(prev, result, corpus, cards):
+    """The 'Since your last report' section: overall + competency deltas and, most
+    importantly, follow-up on the exact habits the previous report told this person
+    to practice. Empty when there is no prior run or no new data."""
+    runs = (prev or {}).get("runs") or []
+    if not runs:
+        return ""
+    last = runs[-1]
+    if last.get("fingerprint") == result.get("fingerprint"):
+        return ""    # same data as last time — nothing to compare
+    cur = _progress_snapshot(result, corpus, cards)
+
+    def arrow(delta):
+        if delta > 0:
+            return f'<b style="color:var(--good)">▲ +{delta}</b>'
+        if delta < 0:
+            return f'<b style="color:var(--bad)">▼ {delta}</b>'
+        return '<b>· ±0</b>'
+
+    when = _esc(str(last.get("as_of") or "")[:10]) or "your last run"
+    d_overall = cur["overall"] - (last.get("overall") or 0)
+    comp_bits = []
+    for name in ("Delegation", "Description", "Discernment", "Diligence"):
+        o, n = (last.get("competencies") or {}).get(name), cur["competencies"].get(name)
+        if o is not None and n is not None and n != o:
+            comp_bits.append(f"{name} {o}→{n}")
+    comp_line = (" · ".join(comp_bits)) if comp_bits else "competency levels unchanged"
+
+    # Follow-up on what the last report said to practice.
+    target_lines = ""
+    for dim in (last.get("top_moves") or [])[:2]:
+        key_label = _SIGNAL_METRIC.get(dim)
+        if not key_label:
+            continue
+        old = (last.get("signals") or {}).get(dim)
+        new = cur["signals"].get(dim)
+        if old is None or new is None:
+            continue
+        verdict = ("✓ that's the habit forming" if new > old + 0.02
+                   else ("— slipping, worth one deliberate rep this week" if new < old - 0.02
+                         else "— no change yet; one deliberate rep per session moves this"))
+        target_lines += (f'<li>You were working on <b>{_esc(disp(dim))}</b>: '
+                         f'{key_label[1]} went <b>{old*100:.0f}% → {new*100:.0f}%</b> {verdict}</li>')
+    targets_html = (f'<ul class="facts" style="margin-top:8px">{target_lines}</ul>'
+                    if target_lines else "")
+
+    return (f'<section><h3>Since your last report ({when})</h3>'
+            f'<div class="card keep"><p><b>Overall: {last.get("overall", "?")} → {cur["overall"]}</b> '
+            f'{arrow(d_overall)} <span class="loc">({cur["prompts"] - (last.get("prompts") or 0):+d} new prompts '
+            f'analyzed)</span></p>'
+            f'<p class="receipt">{_esc(comp_line)}</p>'
+            f'{targets_html}</div></section>')
+
+
+# --------------------------------------------------------------------------- #
 # Reports
 # --------------------------------------------------------------------------- #
 
@@ -1791,7 +1917,8 @@ def build_assessment(corpus, result, cards):
     return (f'<p class="assess">{p1}</p><p class="assess">{p2}</p><p class="assess">{p3}</p>')
 
 
-def build_html(corpus, result, cards, strength, archive_info=None, analysis=None, analysis_note=None):
+def build_html(corpus, result, cards, strength, archive_info=None, analysis=None, analysis_note=None,
+               progress_html=""):
     a = result["archetype"]
     d = result["dist"]
     eps = result.get("episodes") or {}
@@ -2271,6 +2398,8 @@ code{{background:var(--grid);padding:1px 6px;border-radius:5px;font-size:13px}}
   </div>
 </div>
 
+{progress_html}
+
 <section>
   <h3>The short version</h3>
   {assessment_html}
@@ -2484,6 +2613,15 @@ def main(argv=None):
     result = analyze(corpus)
     cards, strength = build_action_plan(corpus, result)
 
+    # Progress loop: only on default runs (an explicit path is a one-off analysis and
+    # must never write into your personal progress history).
+    progress_html = ""
+    if not args.path:
+        state_path = os.environ.get("CLAUDE_INSIGHT_STATE", DEFAULT_STATE_PATH)
+        prev_state = load_progress(state_path)
+        progress_html = build_progress_html(prev_state, result, corpus, cards)
+        save_progress(state_path, prev_state, _progress_snapshot(result, corpus, cards))
+
     if args.evidence:
         bundle = build_evidence(corpus, result, cards, archive_info)
         text = json.dumps(bundle, indent=2)
@@ -2575,7 +2713,8 @@ def main(argv=None):
         return 0
 
     # Render fully before touching the file, so a render error can't leave a 0-byte report.
-    html_doc = build_html(corpus, result, cards, strength, archive_info, analysis, analysis_note)
+    html_doc = build_html(corpus, result, cards, strength, archive_info, analysis, analysis_note,
+                          progress_html=progress_html)
     out_path = os.path.abspath(args.out)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:

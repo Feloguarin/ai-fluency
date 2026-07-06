@@ -306,11 +306,13 @@ class TestArchive(unittest.TestCase):
                        user_text("now run the tests to confirm it works")])
         out = os.path.join(empty_live, "r.html")
         os.environ["CLAUDE_PROJECTS_DIR"] = empty_live  # discover_files reads the empty live dir
+        os.environ["CLAUDE_INSIGHT_STATE"] = os.path.join(empty_live, "progress.json")
         try:
             # no positional path -> archive logic engages; --archive supplies the old session
             rc = insight.main(["--archive", self.arch, "-o", out, "--no-open"])
         finally:
             del os.environ["CLAUDE_PROJECTS_DIR"]
+            del os.environ["CLAUDE_INSIGHT_STATE"]
         self.assertEqual(rc, 0)
         with open(out, encoding="utf-8") as fh:
             html = fh.read()
@@ -347,10 +349,12 @@ class TestArchive(unittest.TestCase):
                       [user_text("add a /health route to server.py and run the tests")])
         out = os.path.join(live_dir, "r.html")
         os.environ["CLAUDE_PROJECTS_DIR"] = live_dir
+        os.environ["CLAUDE_INSIGHT_STATE"] = os.path.join(live_dir, "progress.json")
         try:
             rc = insight.main(["--no-archive", "--archive", self.arch, "-o", out, "--no-open"])
         finally:
             del os.environ["CLAUDE_PROJECTS_DIR"]
+            del os.environ["CLAUDE_INSIGHT_STATE"]
         self.assertEqual(rc, 0)
         self.assertEqual(glob.glob(os.path.join(self.arch, "**", "*.jsonl"), recursive=True), [])
 
@@ -370,6 +374,73 @@ class TestArchive(unittest.TestCase):
         with open(out, encoding="utf-8") as fh:
             html = fh.read()
         self.assertNotIn("sessions in your archive", html)   # archive not merged into analysis
+
+
+class TestProgressLoop(unittest.TestCase):
+    """The report must close its own loop: remember what it told you to work on,
+    and open the next run with the deltas. State is scores-only, written only on
+    default runs, and an unchanged dataset never duplicates a snapshot."""
+
+    def setUp(self):
+        self.live = tempfile.mkdtemp()
+        self.arch = tempfile.mkdtemp()
+        self.state = os.path.join(tempfile.mkdtemp(), "progress.json")
+        os.makedirs(os.path.join(self.live, "proj"), exist_ok=True)
+        self.sess = write_session(os.path.join(self.live, "proj"), "s.jsonl", [
+            user_text("add a /health endpoint to server.py, only that file, so the LB can probe it"),
+            assistant_tool("Read", file_path="/x/server.py"),
+            assistant_tool("Edit", file_path="/x/server.py"),
+        ])
+        os.environ["CLAUDE_PROJECTS_DIR"] = self.live
+        os.environ["CLAUDE_INSIGHT_STATE"] = self.state
+
+    def tearDown(self):
+        del os.environ["CLAUDE_PROJECTS_DIR"]
+        del os.environ["CLAUDE_INSIGHT_STATE"]
+
+    def _run(self, name):
+        out = os.path.join(self.live, name)
+        rc = insight.main(["--archive", self.arch, "--no-archive", "-o", out, "--no-open", "--quiet"])
+        self.assertEqual(rc, 0)
+        with open(out, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_first_run_seeds_state_second_run_shows_deltas(self):
+        html1 = self._run("r1.html")
+        self.assertNotIn("Since your last report", html1)      # nothing to compare yet
+        with open(self.state, encoding="utf-8") as fh:
+            st = json.load(fh)
+        self.assertEqual(len(st["runs"]), 1)
+        self.assertIn("top_moves", st["runs"][0])
+        # new activity arrives
+        with open(self.sess, "a", encoding="utf-8") as fh:
+            fh.write(user_text("run the tests and make sure everything is green before you finish") + "\n")
+            fh.write(assistant_tool("Bash", command="python -m pytest -q") + "\n")
+        html2 = self._run("r2.html")
+        self.assertIn("Since your last report", html2)
+        self.assertIn("You were working on", html2)
+        with open(self.state, encoding="utf-8") as fh:
+            st2 = json.load(fh)
+        self.assertEqual(len(st2["runs"]), 2)
+        # third run with NO new data: no duplicate snapshot, no comparison section
+        html3 = self._run("r3.html")
+        self.assertNotIn("Since your last report", html3)
+        with open(self.state, encoding="utf-8") as fh:
+            st3 = json.load(fh)
+        self.assertEqual(len(st3["runs"]), 2)
+
+    def test_explicit_path_never_touches_state(self):
+        rc = insight.main([os.path.join(self.live, "proj"), "-o",
+                           os.path.join(self.live, "x.html"), "--no-open", "--quiet"])
+        self.assertEqual(rc, 0)
+        self.assertFalse(os.path.exists(self.state))
+
+    def test_state_holds_scores_only_no_prompts(self):
+        self._run("r1.html")
+        with open(self.state, encoding="utf-8") as fh:
+            raw = fh.read()
+        self.assertNotIn("/health endpoint", raw)   # no prompt text ever stored
+        self.assertIn("fingerprint", raw)
 
 
 class TestDiscovery(unittest.TestCase):

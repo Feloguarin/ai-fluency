@@ -240,6 +240,15 @@ thin session openers, whether you get *more specific* or *terser* after a miss, 
 where your briefing discipline drops, hand-offs that land without correction, what your
 correction loops cost in minutes, and ships that were always gated.
 
+### The progress loop (the report follows up on itself)
+Every default run saves a scores-only snapshot (no prompt text) to a private progress file
+(`~/.claude/insight/progress.json`, override with `CLAUDE_INSIGHT_STATE`). The next run
+opens with **"Since your last report"**: your overall and competency deltas, and — the
+point — follow-up on the exact habits the last report told you to practice: *"You were
+working on Checking before you ship: ships gated by a check went 40% → 80% ✓ that's the
+habit forming."* Re-running on unchanged data never duplicates a snapshot, and explicit-path
+runs never touch your progress history.
+
 ### Mined moments (the "it watched me work" layer)
 Deterministically found in your own transcripts and quoted verbatim in the report and the
 evidence bundle: **correction loops** (2+ corrections in a row, with the prompts and the

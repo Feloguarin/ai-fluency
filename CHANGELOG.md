@@ -22,6 +22,12 @@ project aims for [Semantic Versioning](https://semver.org/).
   only when there is nothing of yours to build on, and stay labeled as generic.
 
 ### Added
+- **The progress loop.** The report now follows up on itself: each default run
+  stores a scores-only snapshot (no prompt text) in a private progress file, and
+  the next run opens with "Since your last report" — overall and competency
+  deltas plus follow-up on the exact habits the previous report said to practice
+  ("ships gated by a check went 40% → 80% ✓"). Unchanged data never duplicates a
+  snapshot; explicit-path runs never touch the history.
 - **Archetype fit critique.** A label is a nearest match, never a perfect one — the
   archetype card now reads the residuals out loud: the axis where you match your
   prototype best ("where this label fits you") and the axis where you break it,
