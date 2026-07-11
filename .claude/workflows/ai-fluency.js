@@ -1,7 +1,7 @@
 export const meta = {
   name: 'ai-fluency',
-  description: 'Two-model AI-fluency analysis: Sonnet 4.6 explores the evidence, Opus 4.8 writes a skill map grounded in the AI Fluency framework, then verifies it is evidence-grounded.',
-  whenToUse: 'Run by the /ai-fluency skill after insight.py emits .insight/evidence.json. Args: {evidence, framework} absolute paths.',
+  description: 'Two-model AI-fluency analysis: Sonnet 4.6 explores the evidence (single-tool or combined multi-source), Opus 4.8 writes one skill map + practical prompt rewrites grounded in the AI Fluency framework, then verifies it is evidence-grounded.',
+  whenToUse: 'Run by the /ai-fluency skill after insight.py emits the evidence bundle (combined across Claude Code / Cowork / Codex / Cursor by default). Args: {evidence, framework} absolute paths.',
   phases: [
     { title: 'Explore', detail: 'Sonnet 4.6 — one explorer per 4D competency' },
     { title: 'Analyze', detail: 'Opus 4.8 — skill map grounded in the framework' },
@@ -61,10 +61,15 @@ const ANALYSIS = {
       type: 'array',
       items: {
         type: 'object', additionalProperties: false,
-        required: ['title', 'why', 'how', 'example_before', 'example_after'],
+        required: ['title', 'why', 'how', 'example_before', 'example_after',
+                   'why_it_works', 'expected_gain'],
         properties: {
           title: { type: 'string' }, why: { type: 'string' }, how: { type: 'string' },
           example_before: { type: 'string' }, example_after: { type: 'string' },
+          source: { type: 'string', description: "the tool the before-prompt came from — copy the sample's source field verbatim (omit when the evidence has no source tags)" },
+          why_it_works: { type: 'array', items: { type: 'string' }, minItems: 2, maxItems: 3,
+                          description: 'what the rewrite adds, element by element (the constraint, the file, the acceptance test…)' },
+          expected_gain: { type: 'string', description: 'one concrete sentence: what improves when they prompt this way' },
         },
       },
     },
@@ -88,7 +93,13 @@ const READ = `Using your Read tool, read EXACTLY these two files and use ONLY th
   `copies elsewhere on disk (old archives, Dropbox/iCloud folders) — ignore them entirely. If either ` +
   `file is missing, STOP and report that rather than reading a different one. (A leading ~ means your ` +
   `home directory — expand it to $HOME before reading.) The evidence is real and ` +
-  `local; ground everything in it — quote real prompts; never invent.`
+  `local; ground everything in it — quote real prompts; never invent.\n\n` +
+  `MULTI-SOURCE: when the bundle's "source" is "combined", the person was measured across ` +
+  `several coding agents (the "sources" array: per-tool sub-scores + what each tool cannot ` +
+  `observe; sample prompts carry a "source" tag). Treat it as ONE person with one skill ` +
+  `profile. Cross-tool contrasts are high-value coaching signals ("you verify in Claude Code ` +
+  `but rarely in Cursor") — name them when the evidence shows them. NEVER hold a missing ` +
+  `signal against a tool listed in not_measurable: it is unobservable there, not absent.`
 
 // ---- Explore: Sonnet 4.6, one thorough explorer per competency -------------
 phase('Explore')
@@ -115,12 +126,18 @@ const analystPrompt =
   `an overall_read, a skill_map with EXACTLY the four competencies (Delegation, Description, Discernment, ` +
   `Diligence) in that order, top_growth, and strengths. ` +
   `\n\nThe top_growth section is the heart of the report — it is rendered as this person's "how to grow" ` +
-  `cards, so it MUST be fully custom, never generic advice. Produce 3 items (2 only if the data is thin). ` +
+  `cards, so it MUST be fully custom, never generic advice. Produce 3-4 items (2 only if the data is thin). ` +
   `For each: a sharp, specific title; a "why" that cites THIS person's own numbers/pattern (e.g. their ` +
   `constraint rate, a habit you saw); a concrete "how"; and the before/after where example_before is a ` +
   `REAL prompt they actually wrote (copy it VERBATIM from the evidence's sample_prompts or weak_examples — ` +
   `do not invent or paraphrase it) and example_after is your tailored rewrite of THAT exact prompt, ready ` +
-  `to paste, fixing the specific gap. Pack it with signal: name their files, tools, projects, and phrasing. ` +
+  `to paste, fixing the specific gap. Then make it land: "why_it_works" = 2-3 bullets naming exactly what ` +
+  `the rewrite added and what each element buys (the constraint, the named file, the acceptance test, the ` +
+  `stated why); "expected_gain" = one concrete, checkable sentence of what improves (fewer re-rounds, ` +
+  `right-first-time edits, tests run unprompted); "source" = the tool tag copied from the sample the ` +
+  `before-prompt came from (omit only if the evidence has no source tags). Prefer before-examples from ` +
+  `DIFFERENT tools when the gap shows up in more than one — this person should see their habits travel. ` +
+  `Pack it with signal: name their files, tools, projects, and phrasing. ` +
   `If two growth items would share the same before/after, replace one so no example repeats. ` +
   `Respect agency (discount Claude-driven habits) and confidence (hedge thin signals). ` +
   `Every claim — and every example_before — must be grounded in the evidence.`
@@ -130,7 +147,10 @@ let analysis = await agent(analystPrompt, { label: 'analyze', phase: 'Analyze', 
 phase('Verify')
 const verdict = await agent(
   `${READ}\n\nAdversarially check this AI-fluency skill map against the evidence. Flag any claim that ` +
-  `is generic, ungrounded, inflated, or ignores low confidence. Default to is_grounded=false if unsure.\n\n` +
+  `is generic, ungrounded, inflated, or ignores low confidence. Specifically verify every top_growth ` +
+  `example_before appears VERBATIM in the evidence bundle (sample_prompts or weak_examples) and that any ` +
+  `"source" tag matches the sample it was copied from — flag any that don't. ` +
+  `Default to is_grounded=false if unsure.\n\n` +
   `SKILL MAP:\n${JSON.stringify(analysis, null, 2)}`,
   { label: 'verify', phase: 'Verify', model: 'opus', schema: VERDICT }
 )

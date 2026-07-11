@@ -1,6 +1,6 @@
 ---
 name: ai-fluency
-description: Analyze how the developer collaborates with Claude Code and produce an "AI fluency" skill map — overall score, archetype, the four AI-fluency competencies (Delegation, Description, Discernment, Diligence), the five measured dimensions, and clear what/where/how direction. Use when the user asks to analyze their Claude Code usage, AI fluency, builder profile, prompting style, or "how do I use Claude / AI", or runs /ai-fluency.
+description: Analyze how the developer collaborates with AI coding agents (Claude Code, Cowork, Codex/ChatGPT app, Cursor — combined into ONE score and ONE profile) and produce an "AI fluency" skill map — the four AI-fluency competencies (Delegation, Description, Discernment, Diligence), the five measured dimensions, per-tool sub-scores, and practical growth moves that rewrite the user's own prompts. Use when the user asks to analyze their Claude Code / Cursor / Codex usage, AI fluency, builder profile, prompting style, or "how do I use Claude / AI", or runs /ai-fluency.
 argument-hint: "[PATH | --no-open]"
 allowed-tools: Bash(python3 *), Read, Write, Workflow
 ---
@@ -8,11 +8,15 @@ allowed-tools: Bash(python3 *), Read, Write, Workflow
 # AI Fluency Analysis — one command, full run
 
 You produce a reliable AI-fluency **skill map** for this developer from their real
-Claude Code transcripts. One run, three parts:
+coding-agent transcripts — **every tool on the machine, combined into one score and one
+profile**: Claude Code, Cowork (Claude desktop), Codex (incl. the ChatGPT desktop app),
+and Cursor. One run, three parts:
 
-1. **Measure (deterministic).** `insight.py` parses transcripts, de-contaminates and
-   scrubs them, and computes the numbers — rate-based, confidence-hedged, archive-backed
-   so it sees **more than Claude Code's 30-day window**.
+1. **Measure (deterministic).** `insight.py --source all` parses every source,
+   de-contaminates and scrubs them, and computes the numbers — rate-based,
+   confidence-hedged, archive-backed so it sees **more than Claude Code's 30-day window**.
+   Each dimension blends only from the tools that can observe it, so a tool never gets
+   blamed for a habit it can't record.
 2. **Explore (Sonnet 4.6).** Parallel explorers read the evidence, one per AI-fluency competency.
 3. **Analyze (Opus 4.8).** A senior assessor writes the skill map, **grounded in the bundled
    AI Fluency framework**, then verifies it is evidence-grounded.
@@ -34,8 +38,12 @@ Then measure (use `--quiet` so the score is NOT surfaced yet — this is one run
 end in a single finished report, not a score now and a report later):
 
 ```bash
-python3 ~/.claude/skills/ai-fluency/insight.py --evidence ~/.claude/insight/evidence.json --no-open --quiet -o ~/.claude/insight/ai_fluency_report.html $ARGUMENTS
+python3 ~/.claude/skills/ai-fluency/insight.py --source all --evidence ~/.claude/insight/evidence.json --no-open --quiet -o ~/.claude/insight/ai_fluency_report.html $ARGUMENTS
 ```
+
+(`--source all` reads every tool's standard location and can't take an explicit path — if
+the user passed a PATH in `$ARGUMENTS`, drop `--source all` and run single-source on that
+path instead, in BOTH this step and Step 3.)
 
 This computes the de-contaminated evidence bundle and writes a fallback deterministic
 report. **Do not report the score, archetype, or any result to the user yet** — keep going
@@ -68,7 +76,7 @@ merge it — passing the evidence bundle it was built from so the engine can con
 analysis belongs to this exact run:
 
 ```bash
-python3 ~/.claude/skills/ai-fluency/insight.py --analysis ~/.claude/insight/analysis.json --analysis-evidence ~/.claude/insight/evidence.json -o ~/.claude/insight/ai_fluency_report.html $ARGUMENTS
+python3 ~/.claude/skills/ai-fluency/insight.py --source all --analysis ~/.claude/insight/analysis.json --analysis-evidence ~/.claude/insight/evidence.json -o ~/.claude/insight/ai_fluency_report.html $ARGUMENTS
 ```
 
 This Step-3 run is the FIRST time the score is printed (Step 1 was `--quiet`), so the user
@@ -83,9 +91,12 @@ deterministic numbers. Point the user to `~/.claude/insight/ai_fluency_report.ht
 ## Step 4 — Narrate (don't re-derive)
 
 Only now, after the final report exists, give a short, encouraging read in chat: the
-**overall score + band + archetype** in one sentence, the **single highest-leverage growth
-move** grounded in one of their real prompts, and their **strongest competency** as the
-foundation. Keep it to a paragraph or two; the report has the depth.
+**one overall score + band + archetype** in one sentence, the **single highest-leverage
+growth move** grounded in one of their real prompts, and their **strongest competency** as
+the foundation. If the report is multi-source and the per-tool sub-scores differ sharply,
+name the contrast in one sentence (e.g. "notably stronger in Claude Code than Cursor") —
+it's often the most interesting fact in the report. Keep it to a paragraph or two; the
+report has the depth.
 
 ## Fallbacks
 
