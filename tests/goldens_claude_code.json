@@ -37,8 +37,8 @@
     "band_meaning": "Real back-and-forth is emerging and one or two habits are solid. Some prompts carry a file path or a constraint; verification happens occasionally. The gap to the next level is consistency \u2014 doing the right thing by default, not just sometimes.",
     "conf": {
       "Context": 0.12,
-      "Direction": 0.08333333333333333,
-      "Iteration": 0.4166666666666667,
+      "Direction": 0.083333333,
+      "Iteration": 0.416666667,
       "Toolcraft": 0.225,
       "Verification": 0.2
     },
@@ -46,13 +46,13 @@
       "Context": {
         "grounded": 2,
         "n": 3,
-        "rate": 0.6666666666666666,
+        "rate": 0.666666667,
         "total_edits": 3
       },
       "Direction": {
         "artifact_rate": 0.2,
         "constraint_rate": 0.2,
-        "front_loading": 0.6666666666666667,
+        "front_loading": 0.666666667,
         "intent_rate": 0.6,
         "n": 5
       },
@@ -65,13 +65,13 @@
       "Toolcraft": {
         "delegation_events": 2,
         "distinct": 7,
-        "evenness": 0.9708357627258161,
+        "evenness": 0.970835763,
         "n": 9
       },
       "Verification": {
         "episodes": 3,
         "n": 3,
-        "rate": 0.3333333333333333,
+        "rate": 0.333333333,
         "teardown_bonus": 0,
         "verified": 1
       }
@@ -125,18 +125,18 @@
     "overall": 53,
     "overall_raw": 66,
     "raw": {
-      "Context": 78.43137254901961,
-      "Direction": 63.888888888888886,
-      "Iteration": 65.71428571428571,
-      "Toolcraft": 69.87507288177449,
-      "Verification": 55.55555555555556
+      "Context": 78.431372549,
+      "Direction": 63.888888889,
+      "Iteration": 65.714285714,
+      "Toolcraft": 69.875072882,
+      "Verification": 55.555555556
     },
     "shrunk": {
-      "Context": 53.411764705882355,
-      "Direction": 51.157407407407405,
-      "Iteration": 56.547619047619044,
-      "Toolcraft": 54.47189139839926,
-      "Verification": 51.111111111111114
+      "Context": 53.411764706,
+      "Direction": 51.157407407,
+      "Iteration": 56.547619048,
+      "Toolcraft": 54.471891398,
+      "Verification": 51.111111111
     }
   },
   "delegation_events": 2,

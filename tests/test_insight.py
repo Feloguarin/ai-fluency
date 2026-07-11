@@ -1088,7 +1088,17 @@ class TestClaudeCodeGolden(unittest.TestCase):
 
     @staticmethod
     def snapshot(corpus, result):
-        return json.loads(json.dumps({
+        def stable(x):
+            # Floats are compared at 9 decimal places: 1-ulp differences between Python
+            # builds (e.g. 3.9 vs 3.14 on Toolcraft evenness) are not behavior drift.
+            if isinstance(x, float):
+                return round(x, 9)
+            if isinstance(x, dict):
+                return {k: stable(v) for k, v in x.items()}
+            if isinstance(x, (list, tuple)):
+                return [stable(v) for v in x]
+            return x
+        return json.loads(json.dumps(stable({
             "files": corpus.files,
             "projects": sorted(corpus.projects),
             "total_bytes": corpus.total_bytes,
@@ -1103,7 +1113,7 @@ class TestClaudeCodeGolden(unittest.TestCase):
             "active_seconds": round(corpus.active_seconds, 6),
             "sessions": corpus.sessions,
             "analysis": result,
-        }))
+        })))
 
     def test_pipeline_matches_pre_refactor_golden(self):
         golden_path = os.path.join(os.path.dirname(__file__), "goldens_claude_code.json")
