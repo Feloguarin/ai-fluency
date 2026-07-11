@@ -1020,6 +1020,158 @@ class TestCursorAdapter(unittest.TestCase):
             conn.close()
 
 
+class TestCombinedAnalysis(unittest.TestCase):
+    """--source all: one score, one profile, honestly assembled per dimension."""
+
+    def _claude_corpus(self, td):
+        d = os.path.join(td, "cc", "projA")
+        os.makedirs(d, exist_ok=True)
+        write_session(d, "sess-cc1.jsonl", [
+            user_text("fix `login()` in auth.py so it must only accept POST",
+                      ts="2026-06-01T10:00:00Z"),
+            assistant_tool("Read", ts="2026-06-01T10:00:20Z", file_path="/tmp/a/auth.py"),
+            assistant_tool("Edit", ts="2026-06-01T10:00:40Z", file_path="/tmp/a/auth.py"),
+            assistant_tool("Bash", ts="2026-06-01T10:01:00Z", command="python3 -m pytest -q"),
+            user_text("perfect, now add a test for the GET rejection",
+                      ts="2026-06-01T10:02:00Z"),
+            assistant_tool("Write", ts="2026-06-01T10:02:30Z", file_path="/tmp/a/test_auth.py"),
+        ])
+        return insight.parse(insight.discover_files(os.path.join(td, "cc")))
+
+    def _codex_corpus(self, td):
+        d = os.path.join(td, "cx")
+        write_codex_rollout(d, records=[
+            codex_rec("session_meta", ts="2026-06-02T10:00:00.000Z", id="sess-cx1",
+                      cwd="/Users/someone/Work/tool", git={}),
+            codex_rec("response_item", ts="2026-06-02T10:00:05.000Z", type="message",
+                      role="user", content=[{"type": "input_text",
+                                             "text": "rename the config loader, keep the old import path working"}]),
+            # Edits with NO reads: honest for codex (no read tool) but would read as
+            # "ungrounded" if naively pooled into a merged Context computation.
+            codex_rec("response_item", ts="2026-06-02T10:00:30.000Z", type="custom_tool_call",
+                      name="apply_patch",
+                      input="*** Begin Patch\n*** Update File: /Users/someone/Work/tool/config.py\n*** End Patch"),
+            codex_rec("response_item", ts="2026-06-02T10:01:00.000Z", type="function_call",
+                      name="exec_command", arguments=json.dumps({"cmd": "python3 -m pytest -q"})),
+        ])
+        return insight.parse(insight.CodexAdapter.discover(d), insight.CodexAdapter)
+
+    def _entries(self, td):
+        cc = self._claude_corpus(td)
+        cx = self._codex_corpus(td)
+        r_cc = insight.analyze(cc, insight.ClaudeCodeAdapter.capabilities)
+        r_cx = insight.analyze(cx, insight.CodexAdapter.capabilities)
+        return [
+            {"source": "claude-code", "corpus": cc,
+             "caps": insight.ClaudeCodeAdapter.capabilities,
+             "overall": r_cc["overall"], "band": r_cc["band"]},
+            {"source": "codex", "corpus": cx,
+             "caps": insight.CodexAdapter.capabilities,
+             "overall": r_cx["overall"], "band": r_cx["band"]},
+        ], cc, cx
+
+    def test_masked_source_cannot_poison_a_dimension(self):
+        with tempfile.TemporaryDirectory() as td:
+            entries, cc, cx = self._entries(td)
+            merged, result = insight.analyze_combined(entries)
+            # Context is scored over claude-code data ONLY (codex can't observe reads) —
+            # exactly the number the claude-code corpus produces on its own...
+            solo = insight.analyze(cc)
+            self.assertEqual(result["raw"]["Context"], solo["raw"]["Context"])
+            self.assertEqual(result["dim_sources"]["Context"], ["claude-code"])
+            # ...whereas a naive full-pool Context (codex's read-less edits included)
+            # would come out lower. Guard that the naive number really differs.
+            naive = insight.analyze(insight.merge_corpora(
+                [("claude-code", cc), ("codex", cx)]))
+            self.assertLess(naive["raw"]["Context"], solo["raw"]["Context"])
+            # Verification, by contrast, pools BOTH sources.
+            self.assertEqual(sorted(result["dim_sources"]["Verification"]),
+                             ["claude-code", "codex"])
+
+    def test_one_score_one_profile_with_renormalized_weights(self):
+        with tempfile.TemporaryDirectory() as td:
+            entries, _, _ = self._entries(td)
+            merged, result = insight.analyze_combined(entries)
+            self.assertTrue(result["combined"])
+            self.assertEqual(result["na_dims"], [])   # every dim observed by someone
+            wsum = sum(insight.WEIGHTS[n] for n in result["measurable"])
+            expect = round(sum(insight.WEIGHTS[n] * result["shrunk"][n]
+                               for n in result["measurable"]) / wsum)
+            self.assertEqual(result["overall"], expect)
+            self.assertIn("label", result["archetype"])      # exactly one profile
+            self.assertEqual(len(result["sources"]), 2)      # per-source panel data
+            names = {s["source"] for s in result["sources"]}
+            self.assertEqual(names, {"claude-code", "codex"})
+            codex_row = next(s for s in result["sources"] if s["source"] == "codex")
+            self.assertEqual(codex_row["not_measurable"], ["Context"])
+
+    def test_combined_evidence_tags_prompts_and_fingerprints_merged_set(self):
+        with tempfile.TemporaryDirectory() as td:
+            entries, cc, _ = self._entries(td)
+            merged, result = insight.analyze_combined(entries)
+            self.assertTrue(all(p.get("source") for p in merged.real_prompts))
+            cards, _ = insight.build_action_plan(merged, result)
+            bundle = insight.build_evidence(merged, result, cards, None,
+                                            source="combined",
+                                            capabilities={"prompts": True, "edits": True,
+                                                          "verify": True, "reads": True,
+                                                          "delegation": True})
+            self.assertEqual(bundle["schema"], "claude-insight-evidence/1")
+            self.assertEqual(bundle["source"], "combined")
+            self.assertEqual({s["source"] for s in bundle["sources"]},
+                             {"claude-code", "codex"})
+            self.assertTrue(all(s.get("source") for s in bundle["behavior"]["sample_prompts"]))
+            # The fingerprint binds to the MERGED prompt set, not any single source's.
+            self.assertEqual(result["fingerprint"], insight._run_fingerprint(merged))
+            self.assertNotEqual(result["fingerprint"], insight._run_fingerprint(cc))
+
+    def test_source_all_end_to_end_writes_one_report(self):
+        with tempfile.TemporaryDirectory() as td:
+            ccdir = os.path.join(td, "cc")
+            self._claude_corpus(td)      # writes fixture under td/cc
+            desktop_root = os.path.join(td, "desktop-root")
+            write_desktop_session(desktop_root, "local_e2e", [
+                desktop_rec(type="user", _audit_timestamp="2026-06-03T09:00:10Z",
+                            message={"role": "user", "content": "summarize the sprint board"})])
+            old_env = os.environ.get("CLAUDE_PROJECTS_DIR")
+            saved = (insight._DESKTOP_ROOT, insight._CODEX_ROOTS,
+                     insight._CURSOR_GLOBAL, insight._CURSOR_WORKSPACES)
+            os.environ["CLAUDE_PROJECTS_DIR"] = ccdir
+            insight._DESKTOP_ROOT = desktop_root
+            insight._CODEX_ROOTS = [os.path.join(td, "no-codex")]
+            insight._CURSOR_GLOBAL = os.path.join(td, "no-cursor", "state.vscdb")
+            insight._CURSOR_WORKSPACES = os.path.join(td, "no-cursor-ws")
+            try:
+                out = os.path.join(td, "combined.html")
+                ev = os.path.join(td, "ev.json")
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    rc = insight.main(["--source", "all", "--json", "--no-open",
+                                       "--no-archive", "--archive", os.path.join(td, "arch")])
+                self.assertEqual(rc, 0)
+                payload = json.loads(buf.getvalue())
+                self.assertEqual(payload["source"], "combined")
+                self.assertEqual({s["source"] for s in payload["sources"]},
+                                 {"claude-code", "claude-desktop"})
+                self.assertEqual(payload["data_ingested"]["real_prompts"], 3)
+                # HTML mode: exactly ONE report, carrying the source-mix data.
+                rc = insight.main(["--source", "all", "-o", out, "--no-open", "--quiet",
+                                   "--no-archive", "--archive", os.path.join(td, "arch"),
+                                   "--evidence", ev])
+                self.assertEqual(rc, 0)
+                self.assertTrue(os.path.exists(out))
+                self.assertTrue(os.path.exists(ev))
+                with open(ev, encoding="utf-8") as fh:
+                    self.assertEqual(json.load(fh)["source"], "combined")
+            finally:
+                if old_env is None:
+                    os.environ.pop("CLAUDE_PROJECTS_DIR", None)
+                else:
+                    os.environ["CLAUDE_PROJECTS_DIR"] = old_env
+                (insight._DESKTOP_ROOT, insight._CODEX_ROOTS,
+                 insight._CURSOR_GLOBAL, insight._CURSOR_WORKSPACES) = saved
+
+
 class TestClaudeCodeGolden(unittest.TestCase):
     """Locks the claude-code pipeline's output byte-for-byte (adapter-refactor guard).
 

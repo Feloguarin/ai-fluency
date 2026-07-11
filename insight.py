@@ -1662,6 +1662,124 @@ def analyze(corpus, capabilities=None):
     }
 
 
+def merge_corpora(entries):
+    """Merge per-source corpora into one, tagging every real prompt (and its timeline rec —
+    same object, preserving the parse() identity invariant) with its source. Session ids
+    live in disjoint namespaces per source; a collision is disambiguated with a source prefix."""
+    m = Corpus()
+    m.session_source = {}   # session_id -> source name (report/evidence provenance)
+    for source, c in entries:
+        m.files += c.files
+        m.projects |= c.projects
+        m.total_bytes += c.total_bytes
+        m.user_records += c.user_records
+        m.filtered += c.filtered
+        m.tool_usage += c.tool_usage
+        m.total_tool_calls += c.total_tool_calls
+        m.delegation_events += c.delegation_events
+        m.active_seconds += c.active_seconds
+        m.signals += c.signals
+        for ts in (c.first_ts, c.last_ts):
+            if ts:
+                m.first_ts = ts if m.first_ts is None or ts < m.first_ts else m.first_ts
+                m.last_ts = ts if m.last_ts is None or ts > m.last_ts else m.last_ts
+        for sid, sess in c.sessions.items():
+            key = sid if sid not in m.sessions else f"{source}:{sid}"
+            timeline = []
+            for ev in sess["timeline"]:
+                if ev.get("kind") == "prompt":
+                    rec = dict(ev["rec"], source=source, session=key)
+                    m.real_prompts.append(rec)
+                    timeline.append({"kind": "prompt", "text": ev["text"], "rec": rec})
+                else:
+                    timeline.append(ev)
+            m.sessions[key] = {"project": sess["project"], "timeline": timeline}
+            m.session_source[key] = source
+        # prompts from sessions whose timeline never made it into c.sessions don't exist:
+        # parse() only records prompts through timelines, so the rebuild above is complete.
+    return m
+
+
+def analyze_combined(entries):
+    """ONE score and ONE profile across every source, assembled honestly: each dimension is
+    scored over the merged data of only the sources that can observe it (per their
+    capability masks), so e.g. Codex's read-less edits can never fake 'ungrounded' Context.
+    Evidence volume then drives the same per-dimension confidence shrinkage as ever.
+
+    `entries` is a list of dicts: {"source": str, "corpus": Corpus, "caps": dict,
+    "overall": int, "band": str} (per-source overall/band ride along for the report's
+    source-mix panel). Returns (merged_corpus, result) shaped exactly like analyze()'s."""
+    full = merge_corpora([(e["source"], e["corpus"]) for e in entries])
+    subs = {}   # frozenset of source names -> merged sub-corpus (cache)
+
+    def corpus_for(dim):
+        obs = [e for e in entries if dim in _measurable_dims(e["caps"])]
+        if not obs:
+            return None, []
+        names = frozenset(e["source"] for e in obs)
+        if len(obs) == len(entries):
+            return full, obs
+        if names not in subs:
+            subs[names] = merge_corpora([(e["source"], e["corpus"]) for e in obs])
+        return subs[names], obs
+
+    raw, detail, evidence = {}, {}, {}
+    contributors = {}
+    for name, fn in (("Direction", score_direction), ("Verification", score_verification),
+                     ("Context", score_context), ("Iteration", score_iteration),
+                     ("Toolcraft", score_toolcraft)):
+        sub, obs = corpus_for(name)
+        contributors[name] = [e["source"] for e in obs]
+        if sub is None:
+            raw[name], detail[name], evidence[name] = 0.0, {"n": 0}, []
+            continue
+        s, d, ev = fn(sub)
+        raw[name], detail[name], evidence[name] = s, d, ev
+
+    shrunk, conf = {}, {}
+    for name in raw:
+        shrunk[name], conf[name] = shrink(raw[name], detail[name].get("n", 0), TARGET_N[name])
+
+    measurable = [n for n in WEIGHTS if contributors.get(n)]
+    na_dims = [n for n in WEIGHTS if n not in measurable]
+    wsum = sum(WEIGHTS[n] for n in measurable) or 1.0
+    overall_raw = round(sum(WEIGHTS[n] * raw[n] for n in measurable) / wsum)
+    overall = round(sum(WEIGHTS[n] * shrunk[n] for n in measurable) / wsum)
+    band, band_meaning = band_for(overall)
+    active_hours = max(full.active_seconds / 3600, 0.5)
+    delegation_score = 100 * squash(full.delegation_events / active_hours, 2.0)
+    archetype = classify_archetype(shrunk, delegation_score)
+
+    lens = [len(p["text"]) for p in full.real_prompts]
+    words = [len(p["text"].split()) for p in full.real_prompts]
+    dist = {}
+    if lens:
+        dist = {
+            "median_chars": int(statistics.median(lens)),
+            "mean_chars": int(statistics.mean(lens)),
+            "median_words": int(statistics.median(words)),
+            "under_80_pct": round(100 * sum(1 for L in lens if L < 80) / len(lens)),
+        }
+
+    result = {
+        "raw": raw, "shrunk": shrunk, "conf": conf, "detail": detail, "evidence": evidence,
+        "overall_raw": overall_raw, "overall": overall, "band": band, "band_meaning": band_meaning,
+        "archetype": archetype, "dist": dist, "fingerprint": _run_fingerprint(full),
+        "measurable": measurable, "na_dims": na_dims,
+        # Combined-mode extras (absent from single-source results):
+        "combined": True,
+        "dim_sources": contributors,
+        "sources": [{"source": e["source"], "overall": e["overall"], "band": e["band"],
+                     "real_prompts": len(e["corpus"].real_prompts),
+                     "sessions": e["corpus"].files,
+                     "active_hours": round(e["corpus"].active_seconds / 3600, 1),
+                     "not_measurable": [n for n in WEIGHTS
+                                        if n not in _measurable_dims(e["caps"])]}
+                    for e in entries],
+    }
+    return full, result
+
+
 def build_action_plan(corpus, result):
     """Growth cards ranked by impact = (target - score) * weight. The teaching copy
     comes from SKILL_TEACH; user-specific evidence comes from result['evidence']."""
@@ -1698,8 +1816,11 @@ def build_evidence(corpus, result, cards, archive_info=None, source=None, capabi
         if k in seen:
             return
         seen.add(k)
-        sample.append({"text": _scrub_paths(p["text"][:600]), "project": _project_label(p["project"]),
-                       "chars": len(p["text"])})
+        item = {"text": _scrub_paths(p["text"][:600]), "project": _project_label(p["project"]),
+                "chars": len(p["text"])}
+        if p.get("source"):
+            item["source"] = p["source"]   # combined runs tag each prompt with its tool
+        sample.append(item)
 
     by_len = sorted(prompts, key=lambda p: len(p["text"]))
     for p in by_len[:6]:                 # the terse nudges
@@ -1732,6 +1853,7 @@ def build_evidence(corpus, result, cards, archive_info=None, source=None, capabi
 
     span_days = (corpus.last_ts - corpus.first_ts).days if corpus.first_ts and corpus.last_ts else 0
     a = result["archetype"]
+    bundle_sources = result.get("sources") if result.get("combined") else None
     return {
         "schema": "claude-insight-evidence/1",
         # Additive multi-source fields (schema stays /1 for backward compatibility):
@@ -1739,6 +1861,9 @@ def build_evidence(corpus, result, cards, archive_info=None, source=None, capabi
         "capabilities": capabilities or {"prompts": True, "edits": True, "verify": True,
                                          "reads": True, "delegation": True},
         "not_measurable": result.get("na_dims", []),
+        # Combined runs: per-source sub-scores + which sources fed each dimension.
+        **({"sources": bundle_sources, "dim_sources": result.get("dim_sources")}
+           if bundle_sources else {}),
         "meta": {
             "sessions": corpus.files, "projects": len(corpus.projects),
             "real_prompts": len(prompts), "user_records": corpus.user_records,
@@ -2433,12 +2558,6 @@ def _skill_levels(result):
 # CLI
 # --------------------------------------------------------------------------- #
 
-def _source_out_path(path, source):
-    """report.html + 'claude-desktop' -> report.claude-desktop.html (for --source all)."""
-    stem, ext = os.path.splitext(path)
-    return f"{stem}.{source}{ext or '.html'}"
-
-
 def _merge_archive(files, adapter, args):
     """Default-mode archive maintenance: mirror this run's transcripts into the persistent
     archive, then merge live + archived (deduped by session identity). Only files belonging
@@ -2467,18 +2586,66 @@ def _merge_archive(files, adapter, args):
     return merged, archive_info
 
 
+def _load_analysis(args, current_fp):
+    """Load + provenance-gate an --analysis file. Returns (analysis, note, error_rc);
+    error_rc is non-zero only when the file itself is unreadable. Shared by the
+    single-source and combined paths — the fingerprint math is identical."""
+    if not args.analysis:
+        return None, None, 0
+    try:
+        with open(os.path.expanduser(args.analysis), encoding="utf-8") as f:
+            analysis = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"Could not read --analysis {args.analysis}: {e}", file=sys.stderr)
+        return None, None, 1
+    # Don't blindly trust the analysis file: it lives at a fixed, reused path, so it
+    # may be empty (the AI stage no-op'd) or left over from a different run/person.
+    # Validate shape + provenance; on any failure render the deterministic report
+    # only, and say so, rather than pasting someone else's verdict into this report.
+    if not isinstance(analysis, dict) or not analysis.get("skill_map"):
+        print("  Note: --analysis had no usable skill map (the AI stage may not have run); "
+              "rendering the deterministic report only.", file=sys.stderr)
+        return None, "the AI skill-map stage returned no usable output", 0
+    if args.analysis_evidence:
+        # Deterministic provenance gate: the analysis is valid for this run only if the
+        # evidence it was built from fingerprints to THIS run's data. insight.py wrote
+        # that fingerprint, so this check never depends on the model copying anything.
+        evidence_fp = None
+        try:
+            with open(os.path.expanduser(args.analysis_evidence), encoding="utf-8") as f:
+                evidence_fp = (json.load(f).get("meta") or {}).get("run_fingerprint")
+        except (OSError, json.JSONDecodeError):
+            evidence_fp = None
+        if evidence_fp != current_fp:
+            print(f"  Note: the --analysis does not match this run (its evidence fingerprint "
+                  f"{evidence_fp} != {current_fp}). Ignoring it so it can't leak into this "
+                  f"report; rendering the deterministic report only.", file=sys.stderr)
+            return None, ("the saved AI analysis was produced from a different run / "
+                          "dataset, so it was not used"), 0
+        return analysis, None, 0
+    # Manual --analysis with no evidence binding: if the file itself happens to carry a
+    # run_fingerprint, honor it; otherwise merge (back-compat with hand-written analyses).
+    supplied_fp = analysis.get("run_fingerprint")
+    if supplied_fp and current_fp and supplied_fp != current_fp:
+        print(f"  Note: the supplied --analysis was produced from a DIFFERENT run "
+              f"(fingerprint {supplied_fp} != {current_fp}). Ignoring it so it can't "
+              f"leak into this report; rendering the deterministic report only.",
+              file=sys.stderr)
+        return None, ("the saved AI analysis was produced from a different run / "
+                      "dataset, so it was not used"), 0
+    return analysis, None, 0
+
+
 def _run_all_sources(args):
-    """--source all: one independent report per source with data on this machine. Sources are
-    never blended into one score (different tools have different baselines)."""
+    """--source all: every source with data on this machine, combined into ONE report with
+    one score and one profile. The blend is honest per dimension: each dimension is scored
+    over the merged data of only the sources that can observe it (see analyze_combined);
+    per-source sub-scores ride along for the report's source-mix panel."""
     if args.path:
         print("--source all reads each source's standard location and can't be combined with "
               "an explicit path. Pass a specific --source together with the path.", file=sys.stderr)
         return 2
-    if args.analysis or args.analysis_evidence:
-        print("--source all can't merge an --analysis (an analysis is bound to one source's "
-              "run). Re-run with the specific --source it belongs to.", file=sys.stderr)
-        return 2
-    ran = []
+    entries = []
     for adapter in ADAPTERS.values():
         try:
             if not adapter.detect():
@@ -2486,9 +2653,8 @@ def _run_all_sources(args):
         except Exception:
             continue
         files = adapter.discover(None)
-        archive_info = None
         if files and adapter.archive_enabled:
-            files, archive_info = _merge_archive(files, adapter, args)
+            files, _ = _merge_archive(files, adapter, args)
         if not files:
             continue
         corpus = parse(files, adapter)
@@ -2496,44 +2662,74 @@ def _run_all_sources(args):
             continue
         caps = getattr(adapter, "capabilities_observed", None)
         caps = caps(corpus) if caps else adapter.capabilities
-        result = analyze(corpus, caps)
-        cards, strength = build_action_plan(corpus, result)
-        if args.evidence:
-            if args.evidence == "-":
-                print("  Note: --source all writes one evidence bundle per source; pass a file "
-                      "path (not '-') to receive them.", file=sys.stderr)
-            else:
-                bundle = build_evidence(corpus, result, cards, archive_info,
-                                        source=adapter.name, capabilities=caps)
-                ep = os.path.abspath(_source_out_path(args.evidence, adapter.name))
-                os.makedirs(os.path.dirname(ep) or ".", exist_ok=True)
-                with open(ep, "w", encoding="utf-8") as f:
-                    f.write(json.dumps(bundle, indent=2))
-                if not args.quiet:
-                    print(f"  Evidence ({adapter.name}): {ep}", file=sys.stderr)
-        out_path = os.path.abspath(_source_out_path(args.out, adapter.name))
-        if not args.json:
-            html_doc = build_html(corpus, result, cards, strength, archive_info,
-                                  source=adapter.name)
-            os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-            with open(out_path, "w", encoding="utf-8") as f:
-                f.write(html_doc)
-        ran.append({"source": adapter.name, "overall": result["overall"], "band": result["band"],
-                    "archetype": result["archetype"]["label"],
-                    "not_measurable": result["na_dims"],
-                    "real_prompts": len(corpus.real_prompts), "report": out_path})
-    if not ran:
+        r = analyze(corpus, caps)
+        entries.append({"source": adapter.name, "corpus": corpus, "caps": caps,
+                        "overall": r["overall"], "band": r["band"]})
+    if not entries:
         print("No coding-agent transcripts found for any source on this machine.", file=sys.stderr)
         return 1
+
+    merged, result = analyze_combined(entries)
+    cards, strength = build_action_plan(merged, result)
+    caps_union = {k: any(e["caps"].get(k, True) for e in entries)
+                  for k in ("prompts", "edits", "verify", "reads", "delegation")}
+
+    analysis, analysis_note, rc = _load_analysis(args, result.get("fingerprint"))
+    if rc:
+        return rc
+
+    if args.evidence:
+        bundle = build_evidence(merged, result, cards, None,
+                                source="combined", capabilities=caps_union)
+        text = json.dumps(bundle, indent=2)
+        if args.evidence == "-":
+            print(text)
+        else:
+            ep = os.path.abspath(args.evidence)
+            os.makedirs(os.path.dirname(ep) or ".", exist_ok=True)
+            with open(ep, "w", encoding="utf-8") as f:
+                f.write(text)
+            if not args.quiet:
+                print(f"  Evidence: {ep}", file=sys.stderr)
+
     if args.json:
-        print(json.dumps({"sources": [{k: v for k, v in e.items() if k != "report"} for e in ran]}, indent=2))
+        payload = {
+            "source": "combined",
+            "sources": result["sources"],
+            "not_measurable": result["na_dims"],
+            "overall": result["overall"], "overall_raw": result["overall_raw"],
+            "band": result["band"], "archetype": result["archetype"]["label"],
+            "dimensions_raw": result["raw"], "dimensions_adjusted": result["shrunk"],
+            "confidence": result["conf"], "detail": result["detail"],
+            "data_ingested": {
+                "files": merged.files, "projects": len(merged.projects),
+                "bytes": merged.total_bytes, "user_records": merged.user_records,
+                "real_prompts": len(merged.real_prompts), "filtered": dict(merged.filtered),
+                "active_hours": round(merged.active_seconds / 3600, 1),
+                "prompt_distribution": result["dist"],
+            },
+        }
+        print(json.dumps(payload, indent=2))
         return 0
+
+    html_doc = build_html(merged, result, cards, strength, None, analysis, analysis_note,
+                          source="all sources")
+    out_path = os.path.abspath(args.out)
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(html_doc)
     if not args.quiet:
-        print()
-        for e in ran:
-            print(f"  {e['source']}: {e['overall']}/100 ({e['band']}) · {e['archetype']} · "
-                  f"{e['real_prompts']} prompts\n    Report: {e['report']}")
-        print()
+        print(terminal_summary(merged, result, "all sources"))
+        for s in result["sources"]:
+            na = f" · {', '.join(disp(n) for n in s['not_measurable'])} n/a" if s["not_measurable"] else ""
+            print(f"    {s['source']}: {s['overall']}/100 ({s['band']}) · "
+                  f"{s['real_prompts']} prompts{na}")
+        print(f"\n  Report: {out_path}\n")
+    if not args.no_open:
+        try:
+            webbrowser.open(f"file://{out_path}")
+        except Exception:
+            pass
     return 0
 
 
@@ -2542,7 +2738,9 @@ def main(argv=None):
     ap.add_argument("path", nargs="?", help="transcript dir or .jsonl file (default: the source's standard location)")
     ap.add_argument("--source", default="auto", choices=["auto", "all"] + sorted(ADAPTERS),
                     help="which coding-agent logs to analyze (default: auto-detect; "
-                         "'all' = one report per available source, never a blended score)")
+                         "'all' = every source on this machine combined into ONE report — "
+                         "one score, one profile, each dimension blended only from the "
+                         "sources that can observe it)")
     ap.add_argument("-o", "--out", default="ai_fluency_report.html", help="HTML output path")
     ap.add_argument("--json", action="store_true", help="print raw metrics as JSON and exit")
     ap.add_argument("--no-open", action="store_true", help="don't auto-open the report in a browser")
@@ -2615,54 +2813,9 @@ def main(argv=None):
             if not args.quiet:
                 print(f"  Evidence: {ep}", file=sys.stderr)
 
-    analysis = None
-    analysis_note = None
-    if args.analysis:
-        try:
-            with open(os.path.expanduser(args.analysis), encoding="utf-8") as f:
-                analysis = json.load(f)
-        except (OSError, json.JSONDecodeError) as e:
-            print(f"Could not read --analysis {args.analysis}: {e}", file=sys.stderr)
-            return 1
-        # Don't blindly trust the analysis file: it lives at a fixed, reused path, so it
-        # may be empty (the AI stage no-op'd) or left over from a different run/person.
-        # Validate shape + provenance; on any failure render the deterministic report
-        # only, and say so, rather than pasting someone else's verdict into this report.
-        current_fp = result.get("fingerprint")
-        if not isinstance(analysis, dict) or not analysis.get("skill_map"):
-            print("  Note: --analysis had no usable skill map (the AI stage may not have run); "
-                  "rendering the deterministic report only.", file=sys.stderr)
-            analysis_note = "the AI skill-map stage returned no usable output"
-            analysis = None
-        elif args.analysis_evidence:
-            # Deterministic provenance gate: the analysis is valid for this run only if the
-            # evidence it was built from fingerprints to THIS run's data. insight.py wrote
-            # that fingerprint, so this check never depends on the model copying anything.
-            evidence_fp = None
-            try:
-                with open(os.path.expanduser(args.analysis_evidence), encoding="utf-8") as f:
-                    evidence_fp = (json.load(f).get("meta") or {}).get("run_fingerprint")
-            except (OSError, json.JSONDecodeError):
-                evidence_fp = None
-            if evidence_fp != current_fp:
-                print(f"  Note: the --analysis does not match this run (its evidence fingerprint "
-                      f"{evidence_fp} != {current_fp}). Ignoring it so it can't leak into this "
-                      f"report; rendering the deterministic report only.", file=sys.stderr)
-                analysis_note = ("the saved AI analysis was produced from a different run / "
-                                 "dataset, so it was not used")
-                analysis = None
-        else:
-            # Manual --analysis with no evidence binding: if the file itself happens to carry a
-            # run_fingerprint, honor it; otherwise merge (back-compat with hand-written analyses).
-            supplied_fp = analysis.get("run_fingerprint")
-            if supplied_fp and current_fp and supplied_fp != current_fp:
-                print(f"  Note: the supplied --analysis was produced from a DIFFERENT run "
-                      f"(fingerprint {supplied_fp} != {current_fp}). Ignoring it so it can't "
-                      f"leak into this report; rendering the deterministic report only.",
-                      file=sys.stderr)
-                analysis_note = ("the saved AI analysis was produced from a different run / "
-                                 "dataset, so it was not used")
-                analysis = None
+    analysis, analysis_note, rc = _load_analysis(args, result.get("fingerprint"))
+    if rc:
+        return rc
 
     if args.json:
         payload = {
