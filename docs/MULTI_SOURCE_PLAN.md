@@ -88,8 +88,9 @@ rationale as Claude Code sidechains); (b) per-session capability masking by
 (supplementary, half binary) — bubbles remain the message store through current versions
 (re-verified on Cursor 3.10, data written Jul 10); add a fail-soft probe so a future
 migration degrades with a clear message, not a crash. **Copy `state.vscdb` AND its `-wal`
-(+`-shm`) siblings together, then open the copy `mode=ro&immutable=1` — copying the .vscdb
-alone can read as empty/stale because recent rows live in the WAL (verified failure mode).**
+(+`-shm`) siblings together, then open the copy `mode=ro` — NOT `immutable=1`, which makes
+SQLite ignore the WAL. Copying the .vscdb alone can read as empty/stale because recent rows
+live in the WAL (verified failure mode).**
 Read bubbles in `composerData.fullConversationHeadersOnly` order; take the project name
 from `composerHeaders.value.workspaceIdentifier.uri.fsPath` (basename). Future enrichment,
 out of v1: `~/.cursor/ai-tracking/ai-code-tracking.db` `scored_commits` has per-commit

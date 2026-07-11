@@ -879,6 +879,147 @@ class TestCodexAdapter(unittest.TestCase):
             self.assertEqual(payload["data_ingested"]["real_prompts"], 1)
 
 
+def _cursor_bubble(composer, bid, **kw):
+    return (f"bubbleId:{composer}:{bid}", json.dumps(kw))
+
+
+def build_cursor_db(path, with_headers=True, composers=None, bubbles=None, headers=None):
+    import sqlite3 as sq
+    conn = sq.connect(path)
+    conn.execute("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value BLOB)")
+    if with_headers:
+        conn.execute("CREATE TABLE composerHeaders (composerId TEXT PRIMARY KEY, workspaceId TEXT,"
+                     " createdAt INTEGER, lastUpdatedAt INTEGER, isArchived INTEGER,"
+                     " isSubagent INTEGER, recency INTEGER, checkpointAt INTEGER, value TEXT)")
+        for h in headers or []:
+            conn.execute("INSERT INTO composerHeaders (composerId, createdAt, isSubagent) VALUES (?,?,?)",
+                         (h["id"], h.get("createdAt", 0), h.get("isSubagent", 0)))
+    for cid, data in (composers or {}).items():
+        conn.execute("INSERT INTO cursorDiskKV VALUES (?,?)",
+                     (f"composerData:{cid}", json.dumps(data)))
+    for key, value in bubbles or []:
+        conn.execute("INSERT INTO cursorDiskKV VALUES (?,?)", (key, value))
+    conn.commit()
+    conn.close()
+    return path
+
+
+class TestCursorAdapter(unittest.TestCase):
+    """The Cursor adapter: composer/bubble parsing from a synthetic state.vscdb,
+    subagent exclusion, chat-only masking, and no-path-leaks."""
+
+    def _agent_db(self, td, with_headers=True):
+        ws = {"workspaceIdentifier": {"uri": {"fsPath": "/Users/someone/Work/webapp"}}}
+        composers = {
+            "c1": dict(ws, composerId="c1", unifiedMode="agent",
+                       fullConversationHeadersOnly=[
+                           {"bubbleId": "b1", "type": 1}, {"bubbleId": "b2", "type": 2},
+                           {"bubbleId": "b3", "type": 2}, {"bubbleId": "b4", "type": 1}],
+                       subagentComposerIds=["c_sub"]),
+            "c2": dict(ws, composerId="c2", unifiedMode="chat",
+                       fullConversationHeadersOnly=[{"bubbleId": "b5", "type": 1}]),
+            "c_sub": dict(ws, composerId="c_sub", unifiedMode="agent",
+                          fullConversationHeadersOnly=[{"bubbleId": "b6", "type": 1}]),
+        }
+        bubbles = [
+            _cursor_bubble("c1", "b1", type=1, createdAt="2026-05-01T09:00:00.000Z",
+                           text="rename the export function in `api.ts`, keep the old name as an alias"),
+            _cursor_bubble("c1", "b2", type=2, createdAt="2026-05-01T09:00:30.000Z",
+                           toolFormerData={"name": "run_terminal_cmd", "status": "completed",
+                                           "params": json.dumps({"command": "npm test"})}),
+            _cursor_bubble("c1", "b3", type=2, createdAt="2026-05-01T09:01:00.000Z",
+                           toolFormerData={"name": "edit_file", "status": "completed",
+                                           "userDecision": "rejected",
+                                           "params": json.dumps(
+                                               {"target_file": "/Users/someone/Work/webapp/api.ts"})}),
+            _cursor_bubble("c1", "b4", type=1, createdAt="2026-05-01T09:02:00.000Z",
+                           text="no, keep the alias exported too"),
+            _cursor_bubble("c2", "b5", type=1, createdAt="2026-05-02T10:00:00.000Z",
+                           text="explain what a WAL file is"),
+            _cursor_bubble("c_sub", "b6", type=1, createdAt="2026-05-01T09:03:00.000Z",
+                           text="subagent inner prompt"),
+        ]
+        headers = [{"id": "c1", "createdAt": 1}, {"id": "c2", "createdAt": 2},
+                   {"id": "c_sub", "createdAt": 3, "isSubagent": 1}]
+        return build_cursor_db(os.path.join(td, "state.vscdb"), with_headers=with_headers,
+                               composers=composers, bubbles=bubbles, headers=headers)
+
+    def _check_agent_db(self, td, db):
+        corpus = insight.parse([db], insight.CursorAdapter)
+        # c1 (2 prompts) + c2 (1 prompt); the subagent composer is excluded entirely.
+        self.assertEqual(len(corpus.real_prompts), 3)
+        self.assertNotIn("c_sub", corpus.sessions)
+        self.assertEqual(corpus.projects, {"webapp"})
+        self.assertEqual(corpus.tool_usage.get("bash"), 1)
+        self.assertEqual(corpus.tool_usage.get("edit"), 1)
+        timeline = corpus.sessions["c1"]["timeline"]
+        bash = [t for t in timeline if t["kind"] == "tool" and t["name"] == "bash"]
+        self.assertEqual(bash[0]["cmd"], "npm test")
+        edits = [t for t in timeline if t["kind"] == "tool" and t["name"] == "edit"]
+        self.assertEqual(edits[0]["file"], "~/Work/webapp/api.ts")   # home path scrubbed
+        self.assertEqual(corpus.signals["tool_rejections"], 1)       # userDecision: rejected
+        self.assertGreater(corpus.active_seconds, 0)                 # bubbles carry createdAt
+        # Agent data present -> full capabilities, nothing masked.
+        caps = insight.CursorAdapter.capabilities_observed(corpus)
+        self.assertEqual(insight.analyze(corpus, caps)["na_dims"], [])
+
+    def test_parses_agent_db_via_composer_headers(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._check_agent_db(td, self._agent_db(td, with_headers=True))
+
+    def test_parses_agent_db_without_headers_table(self):
+        # Pre-3.x fallback: composerData scan + subagentComposerIds exclusion.
+        with tempfile.TemporaryDirectory() as td:
+            self._check_agent_db(td, self._agent_db(td, with_headers=False))
+
+    def test_chat_only_db_masks_tool_dimensions(self):
+        with tempfile.TemporaryDirectory() as td:
+            ws = {"workspaceIdentifier": {"uri": {"fsPath": "/Users/someone/Work/notes"}}}
+            db = build_cursor_db(
+                os.path.join(td, "state.vscdb"),
+                composers={"c9": dict(ws, unifiedMode="chat", fullConversationHeadersOnly=[
+                    {"bubbleId": "b1", "type": 1}])},
+                bubbles=[_cursor_bubble("c9", "b1", type=1,
+                                        createdAt="2026-05-02T10:00:00.000Z",
+                                        text="how do I profile a slow query so I can fix the index")],
+                headers=[{"id": "c9"}])
+            corpus = insight.parse([db], insight.CursorAdapter)
+            caps = insight.CursorAdapter.capabilities_observed(corpus)
+            result = insight.analyze(corpus, caps)
+            self.assertEqual(result["na_dims"], ["Verification", "Context", "Toolcraft"])
+            self.assertEqual(result["measurable"], ["Direction", "Iteration"])
+            wsum = sum(insight.WEIGHTS[n] for n in result["measurable"])
+            expect = round(sum(insight.WEIGHTS[n] * result["shrunk"][n]
+                               for n in result["measurable"]) / wsum)
+            self.assertEqual(result["overall"], expect)
+
+    def test_wal_sidecar_is_read(self):
+        # A whole session committed only to the -wal (writer still open, like a running
+        # Cursor) must be visible — the copy brings the sidecar along.
+        import sqlite3 as sq
+        with tempfile.TemporaryDirectory() as td:
+            db = self._agent_db(td, with_headers=True)
+            conn = sq.connect(db)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("INSERT INTO composerHeaders (composerId, createdAt, isSubagent) "
+                         "VALUES ('c3', 9, 0)")
+            conn.execute("INSERT INTO cursorDiskKV VALUES (?,?)", (
+                "composerData:c3",
+                json.dumps({"composerId": "c3", "unifiedMode": "agent",
+                            "workspaceIdentifier": {"uri": {"fsPath": "/Users/someone/Work/webapp"}},
+                            "fullConversationHeadersOnly": [{"bubbleId": "b7", "type": 1}]})))
+            conn.execute("INSERT INTO cursorDiskKV VALUES (?,?)", _cursor_bubble(
+                "c3", "b7", type=1, createdAt="2026-05-02T10:05:00.000Z",
+                text="new session committed to the WAL only"))
+            conn.commit()   # writer stays open: rows live in state.vscdb-wal, not the main file
+            self.assertTrue(os.path.exists(db + "-wal"))
+            corpus = insight.parse([db], insight.CursorAdapter)
+            texts = " ".join(p["text"] for p in corpus.real_prompts)
+            self.assertIn("committed to the WAL", texts)
+            self.assertIn("c3", corpus.sessions)
+            conn.close()
+
+
 class TestClaudeCodeGolden(unittest.TestCase):
     """Locks the claude-code pipeline's output byte-for-byte (adapter-refactor guard).
 

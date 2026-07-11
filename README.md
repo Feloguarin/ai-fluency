@@ -95,6 +95,38 @@ If the Workflow capability isn't available, the skill still produces the complet
 deterministic report — scores, archetype, dimensions, and skill levels — with generic,
 clearly-labeled growth examples instead of the Opus-written ones.
 
+## 🔌 More sources than Claude Code
+
+The same engine reads other coding agents' local logs through source adapters — same
+de-contamination discipline, same rate-based scoring, one report per source (scores are
+never blended across tools: different tools have different baselines):
+
+```bash
+python3 insight.py --source claude-desktop   # Cowork (Claude desktop agent mode)
+python3 insight.py --source codex            # OpenAI Codex — CLI and the ChatGPT desktop app
+python3 insight.py --source cursor           # Cursor IDE (agent + chat sessions)
+python3 insight.py --source all              # one report per source found on this machine
+```
+
+| Source | What it reads | Coverage |
+|---|---|---|
+| `claude-code` (default) | `~/.claude/projects/**/*.jsonl` | all 5 dimensions |
+| `claude-desktop` | Cowork `audit.jsonl` sessions (read-only; archived like Claude Code) | all 5 dimensions |
+| `codex` | `~/.codex/sessions/**/rollout-*.jsonl` | 4 of 5 — Context-setting isn't observable (no read tool) and is **marked "not measurable", never guessed**; weights renormalize |
+| `cursor` | `state.vscdb` (copied WAL-safely, opened read-only) | all 5 for agent/Composer data; chat-only data honestly masks the tool dimensions |
+
+Two notes worth knowing:
+
+- **The "ChatGPT app" is Codex now.** Since July 9, 2026 the ChatGPT desktop app IS the
+  Codex app (`com.openai.codex`) and writes plaintext session logs to `~/.codex` — so
+  `--source codex` covers ChatGPT-app coding sessions. Discovery reads only
+  `rollout-*.jsonl`; credentials files (`auth.json`, `config.toml`) are never touched.
+  ChatGPT *chat* history has no readable local store (encrypted / server-side) and is
+  deliberately not supported.
+- **Honesty over coverage.** When a source can't observe a dimension, the report says
+  "not measurable from <source>" and re-weights the score over what was observed — an
+  unobservable habit is never scored as 0 and never imputed.
+
 ### Data export & flags
 
 ```bash

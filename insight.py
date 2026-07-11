@@ -37,8 +37,10 @@ import math
 import os
 import re
 import shutil
+import sqlite3
 import statistics
 import sys
+import tempfile
 import webbrowser
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -944,7 +946,278 @@ class CodexAdapter:
                 yield ev
 
 
-ADAPTERS = {a.name: a for a in (ClaudeCodeAdapter, ClaudeDesktopAdapter, CodexAdapter)}
+# --- Cursor IDE ----------------------------------------------------------------------------- #
+
+_CURSOR_GLOBAL = "~/Library/Application Support/Cursor/User/globalStorage/state.vscdb"
+_CURSOR_WORKSPACES = "~/Library/Application Support/Cursor/User/workspaceStorage"
+# Linux:   ~/.config/Cursor/User/{globalStorage,workspaceStorage}/...
+# Windows: %APPDATA%\Cursor\User\{globalStorage,workspaceStorage}\...
+
+
+class CursorAdapter:
+    """Cursor IDE — SQLite state.vscdb. The global DB's cursorDiskKV table holds composer
+    sessions (composerData:<id>) and messages (bubbleId:<composerId>:<bubbleId>); Cursor 3.x
+    adds a composerHeaders SQL table (the cheap enumeration path, with isSubagent flags);
+    older per-workspace DBs use ItemTable/aiService.*. The live DB can be tens of GB and
+    WAL-mode while Cursor is open, so we COPY it first and open the copy strictly read-only.
+    The agentKv:blob:* family (3.x runtime state, part binary) is deliberately ignored —
+    bubbles remain the message store; if that ever migrates, parsing degrades to fewer
+    sessions rather than crashing (every key is treated as optional)."""
+
+    name = "cursor"
+    archive_enabled = False   # cumulative store with no TTL; nothing to preserve
+    capabilities = {"prompts": True, "edits": True, "verify": True,
+                    "reads": True, "delegation": True}
+
+    @staticmethod
+    def capabilities_observed(corpus):
+        """Chat-only Cursor data (no agent/composer tool events at all) can't show edits,
+        verification, grounding, or tool breadth — mask them rather than score silence."""
+        if corpus.total_tool_calls:
+            return CursorAdapter.capabilities
+        return {"prompts": True, "edits": False, "verify": False,
+                "reads": False, "delegation": False}
+
+    @staticmethod
+    def detect():
+        if os.path.exists(os.path.expanduser(_CURSOR_GLOBAL)):
+            return True
+        ws = os.path.expanduser(_CURSOR_WORKSPACES)
+        return bool(glob.glob(os.path.join(ws, "*", "state.vscdb")))
+
+    @staticmethod
+    def discover(explicit):
+        if explicit:
+            p = os.path.expanduser(explicit)
+            if os.path.isfile(p) and p.endswith(".vscdb"):
+                return [p]
+            if os.path.isdir(p):
+                return sorted(glob.glob(os.path.join(p, "**", "state.vscdb"), recursive=True))
+            return []
+        out = []
+        g = os.path.expanduser(_CURSOR_GLOBAL)
+        if os.path.exists(g):
+            out.append(g)
+        out.extend(sorted(glob.glob(os.path.join(os.path.expanduser(_CURSOR_WORKSPACES),
+                                                 "*", "state.vscdb"))))
+        return out
+
+    @staticmethod
+    def iter_events(path):
+        tmpdir = tempfile.mkdtemp(prefix="insight-cursor-")
+        tmpdb = os.path.join(tmpdir, "state.vscdb")
+        conn = None
+        try:
+            try:
+                shutil.copyfile(path, tmpdb)
+                # The live DB is WAL-mode while Cursor is open: recently-committed rows live
+                # in the -wal sidecar, not the main file. Copy the sidecars too (and DON'T use
+                # immutable=1, which makes SQLite ignore the WAL) so a running Cursor's
+                # newest history is still read. Verified failure mode: the .vscdb alone can
+                # look empty/stale.
+                for sfx in ("-wal", "-shm"):
+                    side = path + sfx
+                    if os.path.exists(side):
+                        try:
+                            shutil.copyfile(side, tmpdb + sfx)
+                        except OSError:
+                            pass
+            except OSError:
+                return
+            try:
+                conn = sqlite3.connect(f"file:{tmpdb}?mode=ro", uri=True)
+            except sqlite3.Error:
+                return
+            try:
+                tables = {r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+            except sqlite3.Error:
+                return
+            if "cursorDiskKV" in tables:
+                yield from CursorAdapter._iter_disk_kv(conn, "composerHeaders" in tables)
+            elif "ItemTable" in tables:
+                yield from CursorAdapter._iter_item_table(conn, path)
+        finally:
+            if conn is not None:
+                conn.close()
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    @staticmethod
+    def _composer_rows(conn, has_headers):
+        """Yield (composer_id, composerData dict) for every top-level (non-subagent) session.
+        Cursor 3.x: enumerate via the composerHeaders table (has an isSubagent flag). Older:
+        scan composerData: keys and exclude any id another composer lists as a sub-composer."""
+        inner = conn.cursor()
+        if has_headers:
+            try:
+                ids = [r[0] for r in conn.execute(
+                    "SELECT composerId FROM composerHeaders "
+                    "WHERE COALESCE(isSubagent, 0) = 0 ORDER BY COALESCE(createdAt, 0)")]
+            except sqlite3.Error:
+                ids = None
+            if ids is not None:
+                for cid in ids:
+                    try:
+                        row = inner.execute("SELECT value FROM cursorDiskKV WHERE key = ? LIMIT 1",
+                                            (f"composerData:{cid}",)).fetchone()
+                    except sqlite3.Error:
+                        continue
+                    if not row:
+                        continue
+                    try:
+                        yield cid, json.loads(row[0])
+                    except (ValueError, TypeError):
+                        continue
+                return
+        # Fallback: no headers table (pre-3.x) — materialize the composer list (dozens of
+        # rows; the heavy data is in bubbles) and exclude ids referenced as sub-composers.
+        try:
+            rows = conn.execute(
+                "SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'").fetchall()
+        except sqlite3.Error:
+            return
+        parsed = []
+        subagents = set()
+        for key, value in rows:
+            try:
+                data = json.loads(value)
+            except (ValueError, TypeError):
+                continue
+            cid = key.split(":", 1)[1] if ":" in key else key
+            parsed.append((cid, data))
+            for field in ("subagentComposerIds", "subComposerIds"):
+                v = data.get(field)
+                if isinstance(v, list):
+                    subagents.update(x for x in v if isinstance(x, str))
+        for cid, data in parsed:
+            if cid in subagents:
+                continue
+            yield cid, data
+
+    @staticmethod
+    def _composer_project(data):
+        wsi = data.get("workspaceIdentifier")
+        if isinstance(wsi, dict):
+            uri = wsi.get("uri")
+            fsp = uri.get("fsPath") if isinstance(uri, dict) else None
+            if isinstance(fsp, str) and fsp:
+                base = os.path.basename(fsp.rstrip("/\\"))
+                if base:
+                    return base
+        return "cursor"
+
+    @staticmethod
+    def _iter_disk_kv(conn, has_headers):
+        inner = conn.cursor()
+        for composer_id, data in CursorAdapter._composer_rows(conn, has_headers):
+            yield {"role": "session", "project": CursorAdapter._composer_project(data),
+                   "session_id": composer_id}
+            headers = data.get("fullConversationHeadersOnly") or data.get("conversation") or []
+            bubble_ids = [h["bubbleId"] for h in headers
+                          if isinstance(h, dict) and h.get("bubbleId")] if isinstance(headers, list) else []
+            if not bubble_ids:
+                try:
+                    brows = inner.execute("SELECT key FROM cursorDiskKV WHERE key LIKE ?",
+                                          (f"bubbleId:{composer_id}:%",)).fetchall()
+                    bubble_ids = [k.split(":")[-1] for (k,) in brows]
+                except sqlite3.Error:
+                    bubble_ids = []
+            for bid in bubble_ids:
+                try:
+                    brow = inner.execute("SELECT value FROM cursorDiskKV WHERE key = ? LIMIT 1",
+                                         (f"bubbleId:{composer_id}:{bid}",)).fetchone()
+                except sqlite3.Error:
+                    continue
+                if not brow:
+                    continue
+                try:
+                    bubble = json.loads(brow[0])
+                except (ValueError, TypeError):
+                    continue
+                yield from CursorAdapter._bubble_events(bubble)
+
+    @staticmethod
+    def _iter_item_table(conn, path):
+        # Legacy pre-Composer chat panel (workspace ItemTable / aiService.prompts): prompts
+        # only — no tool calls, no timestamps. Kept as a fallback for old installs.
+        sid = os.path.basename(os.path.dirname(path)) or "cursor-workspace"
+        yield {"role": "session", "project": "cursor", "session_id": sid}
+        try:
+            row = conn.execute(
+                "SELECT value FROM ItemTable WHERE key = 'aiService.prompts' LIMIT 1").fetchone()
+        except sqlite3.Error:
+            return
+        if not row:
+            return
+        try:
+            prompts = json.loads(row[0])
+        except (ValueError, TypeError):
+            return
+        if not isinstance(prompts, list):
+            return
+        for p in prompts:
+            text = (p.get("text") if isinstance(p, dict) else str(p)) or ""
+            text = text.strip()
+            if not text:
+                continue
+            if _looks_injected(text):
+                yield {"role": "drop", "reason": "injected / pasted"}
+                continue
+            yield {"role": "user", "text": text}
+
+    @staticmethod
+    def _bubble_events(bubble):
+        if not isinstance(bubble, dict):
+            return
+        ts = bubble.get("createdAt")
+        if ts:
+            yield {"role": "ts", "ts": ts}
+        if bubble.get("type") == 1:   # user message
+            text = (bubble.get("text") or "").strip()
+            if not text:
+                return
+            if _looks_injected(text):
+                yield {"role": "drop", "reason": "injected / pasted"}
+                return
+            yield {"role": "user", "text": text}
+            return
+        tfd = bubble.get("toolFormerData")
+        if isinstance(tfd, dict):
+            canon, fpath, cmd = CursorAdapter._map_tool(tfd.get("name") or tfd.get("toolName") or "", tfd)
+            meta = {}
+            decision = tfd.get("userDecision")
+            if decision:
+                meta["decision"] = decision
+            yield {"role": "tool", "name": canon, "file": fpath, "cmd": cmd, "meta": meta}
+            if decision == "rejected":
+                # The user vetoing an agent action — a Discernment signal.
+                yield {"role": "signal", "name": "tool_rejections", "value": 1}
+
+    @staticmethod
+    def _map_tool(name, tfd):
+        n = (name or "").lower()
+        params = tfd.get("params") or tfd.get("rawArgs") or {}
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except (ValueError, TypeError):
+                params = {}
+        if not isinstance(params, dict):
+            params = {}
+        f = params.get("target_file") or params.get("path") or params.get("file_path")
+        if n in ("run_terminal_cmd", "run_terminal_command", "terminal"):
+            return "bash", None, params.get("command")
+        if n in ("read_file", "read"):
+            return "read", _normalize_path(f), None
+        if n in ("write", "write_file", "create_file"):
+            return "write", _normalize_path(f), None
+        if n in ("edit_file", "apply_diff", "search_replace", "edit", "str_replace", "multi_edit"):
+            return "edit", _normalize_path(f), None
+        return (n or "tool"), _normalize_path(f), None
+
+
+# Registry of available sources. Order matters for auto-detection (claude-code first).
+ADAPTERS = {a.name: a for a in (ClaudeCodeAdapter, ClaudeDesktopAdapter, CodexAdapter, CursorAdapter)}
 
 
 def get_adapter(name):
@@ -1341,7 +1614,8 @@ def _measurable_dims(capabilities):
         out.append("Verification")
     if cap.get("reads", True) and cap.get("edits", True):
         out.append("Context")
-    out.append("Toolcraft")   # tool breadth is observable whenever any tool is used
+    if any(cap.get(k, True) for k in ("edits", "verify", "reads", "delegation")):
+        out.append("Toolcraft")   # tool breadth is observable whenever tool use is observable
     return [n for n in WEIGHTS if n in out]   # keep canonical order
 
 
@@ -2220,7 +2494,9 @@ def _run_all_sources(args):
         corpus = parse(files, adapter)
         if not corpus.real_prompts:
             continue
-        result = analyze(corpus, adapter.capabilities)
+        caps = getattr(adapter, "capabilities_observed", None)
+        caps = caps(corpus) if caps else adapter.capabilities
+        result = analyze(corpus, caps)
         cards, strength = build_action_plan(corpus, result)
         if args.evidence:
             if args.evidence == "-":
@@ -2228,7 +2504,7 @@ def _run_all_sources(args):
                       "path (not '-') to receive them.", file=sys.stderr)
             else:
                 bundle = build_evidence(corpus, result, cards, archive_info,
-                                        source=adapter.name, capabilities=adapter.capabilities)
+                                        source=adapter.name, capabilities=caps)
                 ep = os.path.abspath(_source_out_path(args.evidence, adapter.name))
                 os.makedirs(os.path.dirname(ep) or ".", exist_ok=True)
                 with open(ep, "w", encoding="utf-8") as f:
@@ -2320,12 +2596,14 @@ def main(argv=None):
         print("Found transcripts but no real human-typed prompts to analyze.", file=sys.stderr)
         return 1
 
-    result = analyze(corpus, adapter.capabilities)
+    caps = getattr(adapter, "capabilities_observed", None)
+    caps = caps(corpus) if caps else adapter.capabilities
+    result = analyze(corpus, caps)
     cards, strength = build_action_plan(corpus, result)
 
     if args.evidence:
         bundle = build_evidence(corpus, result, cards, archive_info,
-                                source=adapter.name, capabilities=adapter.capabilities)
+                                source=adapter.name, capabilities=caps)
         text = json.dumps(bundle, indent=2)
         if args.evidence == "-":
             print(text)
