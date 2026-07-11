@@ -1,9 +1,11 @@
 # AI Fluency
 
-See how you *actually* build with AI. AI Fluency reads your local Claude Code
-transcripts and turns them into one self-contained HTML report: a fluency score, your
-builder archetype, a 4-competency skill map, and the few highest-leverage things to change
-next — with the "before/after" rewrites drawn from your own prompts.
+See how you *actually* build with AI — across every coding agent you use. AI Fluency reads
+your local transcripts from **Claude Code, Cowork (Claude desktop), Codex (incl. the
+ChatGPT desktop app), and Cursor**, and turns them into one self-contained HTML report:
+**one fluency score and one builder profile across all your tools**, per-tool sub-scores, a
+4-competency skill map, and the few highest-leverage things to change next — with
+"before/after" rewrites drawn from your own prompts.
 
 It all runs on your machine. Your transcripts never leave it, and the originals are never
 touched.

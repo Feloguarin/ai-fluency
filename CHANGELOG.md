@@ -6,6 +6,11 @@ project aims for [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-07-11
+
+The multi-source release: one score across every AI coding tool on your machine.
+(Also the first release under the product's new name — Claude Insight is now AI Fluency.)
+
 ### Added
 - **Multi-source analysis.** Source adapters for Cowork (Claude desktop agent mode),
   OpenAI Codex (CLI + the ChatGPT desktop app, which is the Codex app since
@@ -48,5 +53,6 @@ First tagged release — the known-good baseline existing users can pin to.
 - Built-in private archive so analysis can see beyond Claude Code's 30-day window.
 - 38 passing tests.
 
-[Unreleased]: https://github.com/Feloguarin/ai-fluency/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Feloguarin/ai-fluency/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/Feloguarin/ai-fluency/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Feloguarin/ai-fluency/releases/tag/v1.0.0

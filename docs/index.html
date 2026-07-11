@@ -404,7 +404,7 @@
         <div class="container">
             <div class="logo">🧠</div>
             <h1>AI Fluency</h1>
-            <p class="tagline">Local AI coding session analyzer. Privacy-first. Understand how you build.</p>
+            <p class="tagline">One score for how you build with AI — across Claude Code, Cowork, Codex, and Cursor. Local, privacy-first.</p>
             
             <div class="install-box">
                 <div class="install-label">Install in seconds</div>
@@ -413,7 +413,7 @@
                     <span class="copy-hint">Click to copy</span>
                 </div>
                 <div class="requirements">
-                    Requires: <span>Python 3.9+</span> &nbsp;|&nbsp; Works on: <span>macOS, Linux, WSL</span> &nbsp;|&nbsp; Optional: <span>Ollama or Claude Code for AI analysis</span>
+                    Requires: <span>Python 3.8+</span> &nbsp;|&nbsp; Works on: <span>macOS, Linux, WSL</span> &nbsp;|&nbsp; Best with: <span>Claude Code (runs the AI skill-map stage)</span>
                 </div>
             </div>
             
@@ -429,24 +429,24 @@
             <h2>What it does</h2>
             <div class="feature-grid">
                 <div class="feature">
-                    <div class="feature-icon">📊</div>
-                    <h3>10+ Metrics</h3>
-                    <p>Extract efficiency, planning ratio, refactoring rate, bug density, and more from every session.</p>
+                    <div class="feature-icon">🔌</div>
+                    <h3>Every Tool, One Score</h3>
+                    <p>Claude Code, Cowork (Claude desktop), Codex — including the ChatGPT desktop app — and Cursor, combined into one score and one profile.</p>
                 </div>
                 <div class="feature">
                     <div class="feature-icon">🧬</div>
                     <h3>Builder Archetypes</h3>
-                    <p>Are you an Architect, Sprinter, Debugger, Collaborator, or Autonomous Agent? Find out with confidence scores.</p>
+                    <p>Architect, Sprinter, Debugger, Collaborator, or Autonomous Agent — picked from your agency-weighted behavior, not from keywords.</p>
                 </div>
                 <div class="feature">
-                    <div class="feature-icon">📈</div>
-                    <h3>Trend Analysis</h3>
-                    <p>Track how your coding patterns evolve across sessions. Spot improvements and regressions.</p>
+                    <div class="feature-icon">⚖️</div>
+                    <h3>Honest by Design</h3>
+                    <p>Rate-based scores that volume can't inflate, confidence-hedged when data is thin, and a habit a tool can't observe is never guessed.</p>
                 </div>
                 <div class="feature">
-                    <div class="feature-icon">📄</div>
-                    <h3>Rich Reports</h3>
-                    <p>Generate beautiful terminal dashboards and shareable HTML reports with charts and insights.</p>
+                    <div class="feature-icon">✍️</div>
+                    <h3>Your Prompts, Rewritten</h3>
+                    <p>Growth cards take prompts you actually wrote and show exactly how to write them instead — paste-ready, with what each change buys you.</p>
                 </div>
                 <div class="feature">
                     <div class="feature-icon">🔒</div>
@@ -470,29 +470,27 @@
                 <div class="usage-card">
                     <span class="badge-pill">Inside Claude Code</span>
                     <h3>🧩 The /ai-fluency skill</h3>
-                    <p>Run it as a Claude Code skill — Claude Code itself analyzes your sessions. No extra model, no API key, no install beyond the repo.</p>
+                    <p>The full run: every tool measured, then Claude writes your skill map and rewrites your own prompts. No API key — it runs on your session.</p>
                     <div class="cmd">/ai-fluency</div>
-                    <div class="cmd">/ai-fluency ~/.claude/projects</div>
                 </div>
                 <div class="usage-card">
-                    <span class="badge-pill">Standalone + local AI</span>
-                    <h3>🤖 CLI with a local model</h3>
-                    <p>Run the CLI anywhere. A small local model via Ollama (default gemma3:4b) writes your profile — all on-device.</p>
-                    <div class="cmd">ollama pull gemma3:4b</div>
-                    <div class="cmd">python3 insight.py ~/.claude/projects</div>
+                    <span class="badge-pill">Standalone CLI</span>
+                    <h3>🔎 One combined report</h3>
+                    <p>The deterministic engine on its own: one score and one profile across every tool found on this machine.</p>
+                    <div class="cmd">python3 insight.py --source all</div>
                 </div>
                 <div class="usage-card">
-                    <span class="badge-pill">No model needed</span>
-                    <h3>⚡ Heuristic / offline</h3>
-                    <p>Skip the AI entirely for instant, deterministic analysis — handy in CI or when Ollama isn't installed.</p>
-                    <div class="cmd">python3 insight.py --no-open</div>
-                    <div class="cmd">python3 insight.py -o report.html</div>
+                    <span class="badge-pill">Per tool</span>
+                    <h3>🎛️ A single source</h3>
+                    <p>Zoom into one tool's picture — helpful when you want to compare how you drive each agent.</p>
+                    <div class="cmd">python3 insight.py --source cursor</div>
+                    <div class="cmd">python3 insight.py --source codex</div>
                 </div>
                 <div class="usage-card">
                     <span class="badge-pill">For tooling</span>
                     <h3>🔌 JSON export</h3>
-                    <p>Emit the raw metrics and a sample of prompts as JSON to pipe into your own scripts, dashboards, or models.</p>
-                    <div class="cmd">python3 insight.py --json ~/.claude/projects</div>
+                    <p>Emit the scores, per-tool sub-scores, and data breakdown as JSON to pipe into your own scripts or dashboards.</p>
+                    <div class="cmd">python3 insight.py --source all --json</div>
                 </div>
             </div>
         </div>
@@ -506,28 +504,28 @@
                     <div class="step-number">1</div>
                     <div class="step-content">
                         <h3>Parse</h3>
-                        <p>Reads Claude Code JSONL transcripts from ~/.claude/projects/ — every message, tool call, and file edit.</p>
+                        <p>Reads every agent's local logs, read-only: Claude Code and Cowork JSONL, Codex rollout files, Cursor's SQLite (copied WAL-safely).</p>
                     </div>
                 </div>
                 <div class="step">
                     <div class="step-number">2</div>
                     <div class="step-content">
-                        <h3>Analyze</h3>
-                        <p>Extracts metrics like token efficiency, planning ratio, and iteration speed using local computation.</p>
+                        <h3>De-contaminate</h3>
+                        <p>Strips tool output, subagent turns, and injected harness text — only prompts you actually typed are ever scored.</p>
                     </div>
                 </div>
                 <div class="step">
                     <div class="step-number">3</div>
                     <div class="step-content">
-                        <h3>Profile</h3>
-                        <p>Assigns builder archetypes based on your patterns — with confidence scores and trait breakdowns.</p>
+                        <h3>Score</h3>
+                        <p>Five rate-based dimensions, each blended only from the tools that can observe it, confidence-hedged when data is thin.</p>
                     </div>
                 </div>
                 <div class="step">
                     <div class="step-number">4</div>
                     <div class="step-content">
                         <h3>Report</h3>
-                        <p>Generates terminal dashboards or HTML reports with visualizations you can save and share.</p>
+                        <p>One self-contained HTML report: your score, profile, per-tool source mix, and growth moves built on your own prompts.</p>
                     </div>
                 </div>
             </div>
@@ -541,27 +539,27 @@
                 <div class="archetype">
                     <div class="archetype-emoji">🏗️</div>
                     <h3>Architect</h3>
-                    <p>High planning ratio, low code churn, systematic approach</p>
+                    <p>Plans and explores before building; reads and designs first</p>
                 </div>
                 <div class="archetype">
                     <div class="archetype-emoji">⚡</div>
                     <h3>Sprinter</h3>
-                    <p>High velocity, rapid iterations, minimal planning</p>
+                    <p>Fast and direct: terse prompts, quick turns, low ceremony</p>
                 </div>
                 <div class="archetype">
-                    <div class="archetype-emoji">🔍</div>
+                    <div class="archetype-emoji">🐛</div>
                     <h3>Debugger</h3>
-                    <p>High test ratio, methodical, quality-focused</p>
+                    <p>Methodical: read to diagnose, change, verify, repeat</p>
                 </div>
                 <div class="archetype">
                     <div class="archetype-emoji">🤝</div>
                     <h3>Collaborator</h3>
-                    <p>Balanced, iterative feedback, team-oriented</p>
+                    <p>Works with the agent like a teammate: options, feedback, iteration</p>
                 </div>
                 <div class="archetype">
                     <div class="archetype-emoji">🤖</div>
                     <h3>Autonomous Agent</h3>
-                    <p>High delegation, human oversight only</p>
+                    <p>Delegates whole, end-to-end jobs and trusts the agent to run them</p>
                 </div>
             </div>
         </div>
@@ -569,7 +567,7 @@
     
     <div class="footer">
         <div class="container">
-            <p>Built for developers who want to understand their coding patterns.</p>
+            <p>Built for developers who want to understand how they actually build with AI.</p>
             <p style="margin-top: 8px;">
                 <a href="https://github.com/Feloguarin/ai-fluency">GitHub</a> &nbsp;·&nbsp;
                 <a href="https://github.com/Feloguarin/ai-fluency/issues">Issues</a> &nbsp;·&nbsp;
