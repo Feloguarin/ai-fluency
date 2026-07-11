@@ -7,6 +7,18 @@ project aims for [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Multi-source analysis.** Source adapters for Cowork (Claude desktop agent mode),
+  OpenAI Codex (CLI + the ChatGPT desktop app, which is the Codex app since
+  2026-07-09), and Cursor (WAL-safe SQLite), alongside Claude Code. New `--source`
+  flag (`auto` / `all` / per source).
+- **One combined report.** `--source all` (what `/ai-fluency` now runs) blends every
+  tool into one score and one profile — each dimension scored only from the sources
+  that can observe it — with per-tool sub-scores in a "where this comes from" panel.
+- **Capability-aware honesty.** Unobservable dimensions render "not measurable",
+  weights renormalize, and the action plan never coaches an unmeasured dimension.
+- **Practical growth cards.** Before/after now ships with the source tool tag,
+  "why it works" bullets, and an expected-gain line; the before-prompt is verified
+  verbatim against the evidence.
 - Continuous integration: the test suite runs on every push to `main` and every
   pull request, across Python 3.8 / 3.10 / 3.12. Nothing merges red.
 - `LICENSE` file (MIT) — the README already declared MIT; this makes it real.
