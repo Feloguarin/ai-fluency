@@ -633,6 +633,140 @@ class TestPersonalizedGrowthAndQuiet(unittest.TestCase):
         self.assertIn("not</b> from your sessions", html)
 
 
+def desktop_rec(**kw):
+    return json.dumps(kw)
+
+
+def write_desktop_session(root, session_dir, records, init_cwd="/Users/someone/Work/myproj"):
+    d = os.path.join(root, "acct-1", "ws-1", session_dir)
+    os.makedirs(d, exist_ok=True)
+    lines = [desktop_rec(type="system", subtype="init", cwd=init_cwd,
+                         session_id=session_dir, _audit_timestamp="2026-03-01T09:00:00Z")]
+    lines += records
+    return write_session(d, "audit.jsonl", lines)
+
+
+class TestClaudeDesktopAdapter(unittest.TestCase):
+    """The Cowork adapter: audit.jsonl parsing, de-contamination, and archive identity."""
+
+    def _fixture(self, root):
+        return write_desktop_session(root, "local_aaa", [
+            desktop_rec(type="user", _audit_timestamp="2026-03-01T09:00:10Z",
+                        message={"role": "user", "content":
+                                 "<uploaded_files>x.csv</uploaded_files>refactor the export "
+                                 "module in `export.py` so it must stream rows"}),
+            desktop_rec(type="assistant", _audit_timestamp="2026-03-01T09:00:40Z",
+                        message={"role": "assistant", "content": [
+                            {"type": "tool_use", "name": "Read",
+                             "input": {"file_path": "/tmp/w/export.py"}}]}),
+            desktop_rec(type="assistant", _audit_timestamp="2026-03-01T09:01:00Z",
+                        message={"role": "assistant", "content": [
+                            {"type": "tool_use", "name": "mcp__workspace__bash",
+                             "input": {"command": "python3 -m pytest -q"}}]}),
+            # Nested subagent turns inlined by Cowork — never the user's own prompting.
+            desktop_rec(type="user", parent_tool_use_id="tu_1",
+                        _audit_timestamp="2026-03-01T09:01:10Z",
+                        message={"role": "user", "content": "subagent inner prompt"}),
+            desktop_rec(type="assistant", parent_tool_use_id="tu_1",
+                        _audit_timestamp="2026-03-01T09:01:20Z",
+                        message={"role": "assistant", "content": [
+                            {"type": "tool_use", "name": "Edit",
+                             "input": {"file_path": "/tmp/w/inner.py"}}]}),
+            desktop_rec(type="user", isReplay=True, _audit_timestamp="2026-03-01T09:01:30Z",
+                        message={"role": "user", "content": "replayed prompt"}),
+            desktop_rec(type="rate_limit_event", _audit_timestamp="2026-03-01T09:01:40Z"),
+            desktop_rec(type="result", _audit_timestamp="2026-03-01T09:02:00Z", num_turns=6,
+                        permission_denials=[{"tool_name": "Bash"}, {"tool_name": "Write"}]),
+        ])
+
+    def test_parses_audit_fixture(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._fixture(td)
+            files = insight.ClaudeDesktopAdapter.discover(td)
+            self.assertEqual(len(files), 1)
+            corpus = insight.parse(files, insight.ClaudeDesktopAdapter)
+            # One real prompt: uploaded-files manifest stripped, subagent/replay turns dropped.
+            self.assertEqual(len(corpus.real_prompts), 1)
+            self.assertTrue(corpus.real_prompts[0]["text"].startswith("refactor the export"))
+            self.assertNotIn("<uploaded_files>", corpus.real_prompts[0]["text"])
+            self.assertEqual(corpus.filtered["subagent turns"], 1)
+            self.assertEqual(corpus.filtered["replays"], 1)
+            # Project comes from the init record's cwd; session id from the local_ folder.
+            self.assertEqual(corpus.projects, {"myproj"})
+            self.assertIn("local_aaa", corpus.sessions)
+            # mcp__workspace__bash de-namespaces to bash and carries its command; the nested
+            # subagent's Edit is NOT counted.
+            self.assertEqual(corpus.tool_usage.get("bash"), 1)
+            self.assertNotIn("Edit", corpus.tool_usage)
+            timeline = corpus.sessions["local_aaa"]["timeline"]
+            self.assertIn({"kind": "tool", "name": "bash", "file": None,
+                           "cmd": "python3 -m pytest -q"}, timeline)
+            # Permission denials surface as a Discernment signal.
+            self.assertEqual(corpus.signals["permission_denials"], 2)
+            # _audit_timestamp drives active time (120s span, no gap over the cap).
+            self.assertAlmostEqual(corpus.active_seconds, 120.0, places=3)
+
+    def test_sandbox_cwd_labels_as_claude_desktop(self):
+        # Cowork's managed per-session sandbox (…/local_<uuid>/outputs) carries no project
+        # signal — it must not surface a misleading "outputs" project.
+        with tempfile.TemporaryDirectory() as td:
+            sandbox = os.path.join(
+                os.path.expanduser(insight._DESKTOP_ROOT), "acct", "ws", "local_zzz", "outputs")
+            p = write_desktop_session(td, "local_zzz", [
+                desktop_rec(type="user", _audit_timestamp="2026-03-01T09:00:10Z",
+                            message={"role": "user", "content": "hello world prompt"})],
+                init_cwd=sandbox)
+            self.assertEqual(insight.ClaudeDesktopAdapter._project_of(p), "claude-desktop")
+
+    def test_archive_keeps_desktop_sessions_distinct(self):
+        with tempfile.TemporaryDirectory() as td:
+            live, arch = os.path.join(td, "live"), os.path.join(td, "arch")
+            p1 = write_desktop_session(live, "local_aaa", [
+                desktop_rec(type="user", _audit_timestamp="2026-03-01T09:00:10Z",
+                            message={"role": "user", "content": "prompt one"})])
+            p2 = write_desktop_session(live, "local_bbb", [
+                desktop_rec(type="user", _audit_timestamp="2026-03-02T09:00:10Z",
+                            message={"role": "user", "content": "prompt two"})])
+            new, updated = insight.archive_transcripts([p1, p2], arch)
+            self.assertEqual((new, updated), (2, 0))
+            arch_files = sorted(glob.glob(os.path.join(arch, "**", "audit.jsonl"), recursive=True))
+            self.assertEqual(len(arch_files), 2)   # one per local_<uuid> folder, no collision
+            # Dedupe across live + archive keeps both sessions (keyed on the session folder,
+            # not the shared audit.jsonl basename), preferring the larger copy.
+            merged = insight._dedupe_sessions([p1, p2] + arch_files)
+            self.assertEqual(len(merged), 2)
+            corpus = insight.parse(merged, insight.ClaudeDesktopAdapter)
+            self.assertEqual(len(corpus.sessions), 2)
+
+    def test_sources_do_not_cross_contaminate(self):
+        with tempfile.TemporaryDirectory() as td:
+            # A directory holding both formats — e.g. a mixed archive.
+            os.makedirs(os.path.join(td, "projA"), exist_ok=True)
+            write_session(os.path.join(td, "projA"), "sess-1.jsonl",
+                          [user_text("claude code prompt")])
+            write_desktop_session(td, "local_ccc", [
+                desktop_rec(type="user", _audit_timestamp="2026-03-01T09:00:10Z",
+                            message={"role": "user", "content": "cowork prompt"})])
+            cc = insight.ClaudeCodeAdapter.discover(td)
+            dt = insight.ClaudeDesktopAdapter.discover(td)
+            self.assertEqual([os.path.basename(p) for p in cc], ["sess-1.jsonl"])
+            self.assertEqual([os.path.basename(p) for p in dt], ["audit.jsonl"])
+            # An explicitly named single file is still honored, whatever its basename.
+            explicit = insight.ClaudeDesktopAdapter.discover(dt[0])
+            self.assertEqual(explicit, [dt[0]])
+
+    def test_source_flag_end_to_end_json(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._fixture(td)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = insight.main(["--source", "claude-desktop", td, "--json", "--no-open"])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buf.getvalue())
+            self.assertEqual(payload["source"], "claude-desktop")
+            self.assertEqual(payload["data_ingested"]["real_prompts"], 1)
+
+
 class TestClaudeCodeGolden(unittest.TestCase):
     """Locks the claude-code pipeline's output byte-for-byte (adapter-refactor guard).
 

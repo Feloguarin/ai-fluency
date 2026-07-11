@@ -334,6 +334,7 @@ class Corpus:
         self.first_ts = None
         self.last_ts = None
         self.active_seconds = 0.0
+        self.signals = Counter()        # source-specific extras (e.g. permission_denials)
         # Per-session ordered timelines of {"kind": "prompt"|"tool", ...}
         self.sessions = {}              # session_id -> {"project","timeline":[...]}
 
@@ -367,16 +368,36 @@ def discover_files(explicit):
     return _filter_transcripts(sorted(set(files)))
 
 
+def _is_cowork(path):
+    """Cowork (Claude desktop agent-mode) sessions are always named audit.jsonl, while Claude
+    Code sessions are named <session-uuid>.jsonl. The basename alone discriminates the two
+    sources, and it keeps working after a file is mirrored into the persistent archive."""
+    return os.path.basename(path) == "audit.jsonl"
+
+
+def _session_key(path):
+    """A stable per-session identity used to de-duplicate live + archived copies.
+
+    Claude Code filenames ARE globally-unique session ids, so the basename is the key.
+    Cowork files are ALL named audit.jsonl — the unique id is the enclosing per-session
+    folder (e.g. local_<uuid>), which the archive mirrors, so the key survives archiving.
+    The 'cowork:' prefix keeps the two namespaces from ever colliding."""
+    if _is_cowork(path):
+        parent = os.path.basename(os.path.dirname(path))
+        return "cowork:" + (parent or "audit")
+    return os.path.basename(path)
+
+
 def _dedupe_sessions(files):
     """When the same session shows up in more than one root (the live ~/.claude/projects dir
     AND the persistent archive — possibly under a since-renamed project folder, a different-case
     path, or a synced copy from another machine), keep a single copy of it: the largest one,
     since transcripts only ever grow, so the biggest file is the most complete. Claude Code
-    session filenames are globally-unique IDs, so the filename alone identifies the session —
-    keying on it (not the parent folder) is what makes the dedupe robust to all of the above."""
+    session filenames are globally-unique IDs (Cowork sessions key on their unique per-session
+    folder instead — see _session_key), which is what makes the dedupe robust to all of the above."""
     best = {}
     for path in files:
-        key = os.path.basename(path)
+        key = _session_key(path)
         try:
             size = os.path.getsize(path)
         except OSError:
@@ -484,8 +505,19 @@ class ClaudeCodeAdapter:
         return any(os.path.isdir(os.path.expanduser(d)) for d in DEFAULT_DIRS)
 
     @staticmethod
+    def owns_file(path):
+        return not _is_cowork(path)
+
+    @staticmethod
     def discover(explicit):
-        return discover_files(explicit)
+        files = discover_files(explicit)
+        if explicit:
+            p = os.path.expanduser(explicit)
+            if os.path.isfile(p):
+                return files   # an explicitly named single file is always honored
+        # A directory scan skips other sources' files (a Cowork audit.jsonl mirrored into
+        # the archive, or sitting inside a user-supplied directory, is not Claude Code data).
+        return [p for p in files if ClaudeCodeAdapter.owns_file(p)]
 
     @staticmethod
     def iter_events(path):
@@ -542,7 +574,156 @@ class ClaudeCodeAdapter:
                 yield {"role": "user", "text": text}
 
 
-ADAPTERS = {a.name: a for a in (ClaudeCodeAdapter,)}
+# --- Claude Desktop (agent mode / "Cowork") ------------------------------------------------ #
+
+_DESKTOP_ROOT = "~/Library/Application Support/Claude/local-agent-mode-sessions"
+_UPLOADED_RE = re.compile(r"<uploaded_files>.*?</uploaded_files>", re.S)
+
+
+def _strip_uploaded_files(text):
+    """Cowork prepends an <uploaded_files> manifest to the prompt that attached them —
+    harness text, not something the user typed."""
+    if not text:
+        return text
+    return _UPLOADED_RE.sub("", text)
+
+
+class ClaudeDesktopAdapter:
+    """Claude Desktop agent-mode ("Cowork") sessions — .../local-agent-mode-sessions/**/audit.jsonl.
+    Records share Claude Code's message/tool_use shape, so tool extraction is reused; the
+    differences are the harness envelopes (system/result/rate_limit_event/tool_use_summary),
+    `_audit_timestamp` as the clock, nested subagent turns inlined in the same file (marked by
+    parent_tool_use_id), and the isReplay/isSynthetic de-contamination. Files carry an
+    `_audit_hmac` integrity field — read-only, never rewrite them."""
+
+    name = "claude-desktop"
+    archive_enabled = True   # sessions archive under their unique local_<uuid> folder
+    capabilities = {"prompts": True, "edits": True, "verify": True,
+                    "reads": True, "delegation": True}
+
+    @staticmethod
+    def detect():
+        return os.path.isdir(os.path.expanduser(_DESKTOP_ROOT))
+
+    @staticmethod
+    def owns_file(path):
+        return _is_cowork(path)
+
+    @staticmethod
+    def discover(explicit):
+        if explicit:
+            p = os.path.expanduser(explicit)
+            if os.path.isfile(p) and p.endswith(".jsonl"):
+                return [p]
+            if os.path.isdir(p):
+                return sorted(glob.glob(os.path.join(p, "**", "audit.jsonl"), recursive=True))
+            return []
+        root = os.path.expanduser(_DESKTOP_ROOT)
+        if not os.path.isdir(root):
+            return []
+        return sorted(glob.glob(os.path.join(root, "**", "audit.jsonl"), recursive=True))
+
+    @staticmethod
+    def _project_of(path):
+        """Project = basename of the session's cwd, read from the system/init record (usually
+        the first line) — but only when the session ran in a real user folder. Cowork normally
+        runs each session inside its own managed sandbox (…/local_<uuid>/outputs), which carries
+        no project signal, so those label as flat 'claude-desktop'."""
+        try:
+            with open(path, encoding="utf-8") as fh:
+                for _ in range(10):
+                    line = fh.readline()
+                    if not line:
+                        break
+                    try:
+                        e = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if e.get("type") == "system" and isinstance(e.get("cwd"), str) and e.get("cwd"):
+                        cwd = e["cwd"].rstrip("/\\")
+                        in_sandbox = os.path.expanduser(_DESKTOP_ROOT) in cwd
+                        base = os.path.basename(cwd)
+                        if in_sandbox or not base:
+                            return "claude-desktop"
+                        return base
+        except OSError:
+            pass
+        return "claude-desktop"
+
+    @staticmethod
+    def iter_events(path):
+        # One audit.jsonl == one session; the unique per-session directory is the session id.
+        session_id = os.path.basename(os.path.dirname(path)) or os.path.splitext(os.path.basename(path))[0]
+        yield {"role": "session", "project": ClaudeDesktopAdapter._project_of(path),
+               "session_id": session_id}
+        try:
+            fh = open(path, encoding="utf-8")
+        except OSError:
+            return
+        with fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = e.get("timestamp") or e.get("_audit_timestamp")
+                if ts is not None:
+                    yield {"role": "ts", "ts": ts}
+                typ = e.get("type")
+                if typ == "result":
+                    pd = e.get("permission_denials")
+                    if isinstance(pd, list) and pd:
+                        # The user vetoing agent actions — a Discernment signal.
+                        yield {"role": "signal", "name": "permission_denials", "value": len(pd)}
+                    continue
+                if typ in ("system", "rate_limit_event", "tool_use_summary"):
+                    continue   # init/status envelopes and summaries — never prompts or actions
+                if e.get("parent_tool_use_id"):
+                    # A nested subagent turn inlined in the parent's file (Claude Code keeps
+                    # these in separate subagents/ files; Cowork inlines them). Not the user's
+                    # own prompting, and its tool calls aren't the top-level agent's either.
+                    if typ == "user":
+                        yield {"role": "drop", "reason": "subagent turns"}
+                    continue
+                msg = e.get("message") if isinstance(e.get("message"), dict) else {}
+                role = msg.get("role") or typ
+                content = msg.get("content")
+
+                if role == "assistant":
+                    if isinstance(content, list):
+                        for b in content:
+                            if isinstance(b, dict) and b.get("type") == "tool_use":
+                                yield _claude_tool_event(b)
+                    continue
+
+                if role != "user":
+                    continue
+                if _is_tool_result(content) or e.get("tool_use_result") is not None:
+                    yield {"role": "drop", "reason": "tool results"}
+                    continue
+                if e.get("isReplay"):
+                    yield {"role": "drop", "reason": "replays"}
+                    continue
+                if e.get("isSynthetic"):
+                    yield {"role": "drop", "reason": "meta-injected"}
+                    continue
+                if e.get("isSidechain") or e.get("subagent_type"):
+                    yield {"role": "drop", "reason": "subagent turns"}
+                    continue
+                text = _strip_uploaded_files(_text_of(content)).strip()
+                if not text:
+                    yield {"role": "drop", "reason": "empty"}
+                    continue
+                if _looks_injected(text):
+                    yield {"role": "drop", "reason": "injected / pasted"}
+                    continue
+                yield {"role": "user", "text": text}
+
+
+ADAPTERS = {a.name: a for a in (ClaudeCodeAdapter, ClaudeDesktopAdapter)}
 
 
 def get_adapter(name):
@@ -606,6 +787,9 @@ def parse(files, adapter=None):
                     cur["ts"].append(ts)
                     c.first_ts = ts if c.first_ts is None or ts < c.first_ts else c.first_ts
                     c.last_ts = ts if c.last_ts is None or ts > c.last_ts else c.last_ts
+                continue
+            if role == "signal":
+                c.signals[ev.get("name", "signal")] += int(ev.get("value", 1) or 0)
                 continue
             if role == "drop":
                 c.user_records += 1
@@ -1702,9 +1886,111 @@ def _skill_levels(result):
 # CLI
 # --------------------------------------------------------------------------- #
 
+def _source_out_path(path, source):
+    """report.html + 'claude-desktop' -> report.claude-desktop.html (for --source all)."""
+    stem, ext = os.path.splitext(path)
+    return f"{stem}.{source}{ext or '.html'}"
+
+
+def _merge_archive(files, adapter, args):
+    """Default-mode archive maintenance: mirror this run's transcripts into the persistent
+    archive, then merge live + archived (deduped by session identity). Only files belonging
+    to `adapter` are read back, so one source's archived sessions never leak into another's
+    report. Returns (files, archive_info)."""
+    archive_dir = os.path.expanduser(args.archive)
+    new = updated = 0
+    if not args.no_archive:
+        new, updated = archive_transcripts(files, archive_dir)
+    arch_files = _filter_transcripts(glob.glob(os.path.join(archive_dir, "**", "*.jsonl"), recursive=True))
+    arch_files = [p for p in arch_files if adapter.owns_file(p)]
+    merged = _dedupe_sessions(files + arch_files)
+    archive_info = {
+        "dir": args.archive, "enabled": not args.no_archive,
+        "live_sessions": len(files), "archived_sessions": len(arch_files),
+        "merged_sessions": len(merged), "new": new, "updated": updated,
+    }
+    # If most of what we're analyzing comes only from the archive (not this machine's
+    # live transcripts), a shared/synced archive could be feeding in someone else's data.
+    archive_only = archive_info["merged_sessions"] - archive_info["live_sessions"]
+    if archive_only > max(25, 2 * archive_info["live_sessions"]):
+        print(f"  Note: {archive_only} of {archive_info['merged_sessions']} analyzed sessions exist "
+              f"only in the archive ({args.archive}), not in your live transcripts. If that archive "
+              f"is shared or synced across people/machines, this report may mix in data that isn't "
+              f"yours — point --archive at a private, per-person path.", file=sys.stderr)
+    return merged, archive_info
+
+
+def _run_all_sources(args):
+    """--source all: one independent report per source with data on this machine. Sources are
+    never blended into one score (different tools have different baselines)."""
+    if args.path:
+        print("--source all reads each source's standard location and can't be combined with "
+              "an explicit path. Pass a specific --source together with the path.", file=sys.stderr)
+        return 2
+    if args.analysis or args.analysis_evidence:
+        print("--source all can't merge an --analysis (an analysis is bound to one source's "
+              "run). Re-run with the specific --source it belongs to.", file=sys.stderr)
+        return 2
+    ran = []
+    for adapter in ADAPTERS.values():
+        try:
+            if not adapter.detect():
+                continue
+        except Exception:
+            continue
+        files = adapter.discover(None)
+        archive_info = None
+        if files and adapter.archive_enabled:
+            files, archive_info = _merge_archive(files, adapter, args)
+        if not files:
+            continue
+        corpus = parse(files, adapter)
+        if not corpus.real_prompts:
+            continue
+        result = analyze(corpus)
+        cards, strength = build_action_plan(corpus, result)
+        if args.evidence:
+            if args.evidence == "-":
+                print("  Note: --source all writes one evidence bundle per source; pass a file "
+                      "path (not '-') to receive them.", file=sys.stderr)
+            else:
+                bundle = build_evidence(corpus, result, cards, archive_info)
+                ep = os.path.abspath(_source_out_path(args.evidence, adapter.name))
+                os.makedirs(os.path.dirname(ep) or ".", exist_ok=True)
+                with open(ep, "w", encoding="utf-8") as f:
+                    f.write(json.dumps(bundle, indent=2))
+                if not args.quiet:
+                    print(f"  Evidence ({adapter.name}): {ep}", file=sys.stderr)
+        out_path = os.path.abspath(_source_out_path(args.out, adapter.name))
+        if not args.json:
+            html_doc = build_html(corpus, result, cards, strength, archive_info)
+            os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(html_doc)
+        ran.append({"source": adapter.name, "overall": result["overall"], "band": result["band"],
+                    "archetype": result["archetype"]["label"],
+                    "real_prompts": len(corpus.real_prompts), "report": out_path})
+    if not ran:
+        print("No coding-agent transcripts found for any source on this machine.", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps({"sources": [{k: v for k, v in e.items() if k != "report"} for e in ran]}, indent=2))
+        return 0
+    if not args.quiet:
+        print()
+        for e in ran:
+            print(f"  {e['source']}: {e['overall']}/100 ({e['band']}) · {e['archetype']} · "
+                  f"{e['real_prompts']} prompts\n    Report: {e['report']}")
+        print()
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="AI Fluency v2 — how skillfully you build with AI (one command, zero install).")
-    ap.add_argument("path", nargs="?", help="transcript dir or .jsonl file (default: ~/.claude/projects)")
+    ap.add_argument("path", nargs="?", help="transcript dir or .jsonl file (default: the source's standard location)")
+    ap.add_argument("--source", default="auto", choices=["auto", "all"] + sorted(ADAPTERS),
+                    help="which coding-agent logs to analyze (default: auto-detect; "
+                         "'all' = one report per available source, never a blended score)")
     ap.add_argument("-o", "--out", default="ai_fluency_report.html", help="HTML output path")
     ap.add_argument("--json", action="store_true", help="print raw metrics as JSON and exit")
     ap.add_argument("--no-open", action="store_true", help="don't auto-open the report in a browser")
@@ -1728,40 +2014,32 @@ def main(argv=None):
                          "so the score isn't surfaced before the full AI report is ready)")
     args = ap.parse_args(argv)
 
-    files = discover_files(args.path)
+    if args.source == "all":
+        return _run_all_sources(args)
+
+    # Single source: named, or auto (an explicit path defaults to Claude Code's format —
+    # point another format at it with an explicit --source).
+    if args.source == "auto":
+        adapter = ADAPTERS["claude-code"] if args.path else detect_adapter()
+    else:
+        adapter = ADAPTERS[args.source]
+
+    files = adapter.discover(args.path)
 
     # Default mode: maintain + read the persistent archive so we can analyze more than the
-    # ~30 days Claude Code keeps on disk. Skipped when an explicit path is given.
+    # ~30 days Claude Code keeps on disk. Skipped when an explicit path is given, or for
+    # sources whose store isn't subject to that churn.
     archive_info = None
-    if not args.path:
-        archive_dir = os.path.expanduser(args.archive)
-        new = updated = 0
-        if not args.no_archive:
-            new, updated = archive_transcripts(files, archive_dir)
-        arch_files = _filter_transcripts(glob.glob(os.path.join(archive_dir, "**", "*.jsonl"), recursive=True))
-        merged = _dedupe_sessions(files + arch_files)
-        archive_info = {
-            "dir": args.archive, "enabled": not args.no_archive,
-            "live_sessions": len(files), "archived_sessions": len(arch_files),
-            "merged_sessions": len(merged), "new": new, "updated": updated,
-        }
-        files = merged
-        # If most of what we're analyzing comes only from the archive (not this machine's
-        # live transcripts), a shared/synced archive could be feeding in someone else's data.
-        archive_only = archive_info["merged_sessions"] - archive_info["live_sessions"]
-        if archive_only > max(25, 2 * archive_info["live_sessions"]):
-            print(f"  Note: {archive_only} of {archive_info['merged_sessions']} analyzed sessions exist "
-                  f"only in the archive ({args.archive}), not in your live transcripts. If that archive "
-                  f"is shared or synced across people/machines, this report may mix in data that isn't "
-                  f"yours — point --archive at a private, per-person path.", file=sys.stderr)
+    if not args.path and adapter.archive_enabled:
+        files, archive_info = _merge_archive(files, adapter, args)
 
     if not files:
-        where = args.path or "~/.claude/projects"
-        print(f"No Claude Code transcripts found in {where}.\n"
+        where = args.path or f"the standard {adapter.name} location"
+        print(f"No {adapter.name} transcripts found in {where}.\n"
               f"Point at your transcripts with:  python3 insight.py /path/to/dir", file=sys.stderr)
         return 1
 
-    corpus = parse(files)
+    corpus = parse(files, adapter)
     if not corpus.real_prompts:
         print("Found transcripts but no real human-typed prompts to analyze.", file=sys.stderr)
         return 1
@@ -1833,6 +2111,7 @@ def main(argv=None):
 
     if args.json:
         payload = {
+            "source": adapter.name,
             "overall": result["overall"], "overall_raw": result["overall_raw"],
             "band": result["band"], "archetype": result["archetype"]["label"],
             "dimensions_raw": result["raw"], "dimensions_adjusted": result["shrunk"],
