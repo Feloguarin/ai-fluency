@@ -1,6 +1,6 @@
-# Claude Insight
+# AI Fluency
 
-See how you *actually* build with AI. Claude Insight reads your local Claude Code
+See how you *actually* build with AI. AI Fluency reads your local Claude Code
 transcripts and turns them into one self-contained HTML report: a fluency score, your
 builder archetype, a 4-competency skill map, and the few highest-leverage things to change
 next — with the "before/after" rewrites drawn from your own prompts.
@@ -11,7 +11,7 @@ touched.
 ## ⚡ Install in 5 seconds
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Feloguarin/claude-insight/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Feloguarin/ai-fluency/main/install.sh | bash
 ```
 
 That drops the **`/ai-fluency`** skill into Claude Code. Then, inside Claude Code (any
@@ -119,7 +119,7 @@ By default Claude Code **deletes transcripts older than its `cleanupPeriodDays` 
    ```json
    { "cleanupPeriodDays": 365 }
    ```
-2. **The built-in archive (automatic).** On every default run, Claude Insight copies your
+2. **The built-in archive (automatic).** On every default run, AI Fluency copies your
    transcripts into a persistent archive (`~/.claude/insight-archive` by default) *before*
    the cleanup can remove them, then analyzes **live + archive**, de-duplicated. From your
    first run on, your history accumulates indefinitely. It only ever grows files, copies
@@ -139,8 +139,8 @@ By default Claude Code **deletes transcripts older than its `cleanupPeriodDays` 
 `pip install`:
 
 ```bash
-git clone https://github.com/Feloguarin/claude-insight.git
-cd claude-insight
+git clone https://github.com/Feloguarin/ai-fluency.git
+cd ai-fluency
 python3 insight.py                 # analyze ~/.claude/projects, then write + open the report
 ```
 

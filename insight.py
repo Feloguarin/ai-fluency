@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Claude Insight v2 — one-command, zero-install AI-fluency analyzer.
+AI Fluency v2 — one-command, zero-install analyzer of how skillfully you build with AI.
 
     python3 insight.py
 
@@ -1234,7 +1234,7 @@ def build_html(corpus, result, cards, strength, archive_info=None, analysis=None
             'left on disk to read — not a limit of this tool. To analyze more history: '
             '<b>(1)</b> raise <code>cleanupPeriodDays</code> in <code>~/.claude/settings.json</code> '
             '(e.g. <code>"cleanupPeriodDays": 365</code>) to stop the deletion; '
-            f'<b>(2)</b> keep running Claude Insight.{grew}'
+            f'<b>(2)</b> keep running AI Fluency.{grew}'
             '</div>')
 
     # action cards (what/where/how)
@@ -1447,7 +1447,7 @@ code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
 </style></head><body><div class="wrap">
 
 <header>
-  <div class="kick">Claude Insight · AI Fluency Report</div>
+  <div class="kick">AI Fluency Report</div>
   <h1>How skillfully you build with AI</h1>
   <p class="sub">A read of how you actually drive Claude Code — measured from your real prompts and Claude's real actions, analyzed entirely on your machine.</p>
 </header>
@@ -1548,7 +1548,7 @@ code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
   </details>
 </section>
 
-<footer>Generated locally by Claude Insight v2 · your transcripts never left this machine.</footer>
+<footer>Generated locally by AI Fluency v2 · your transcripts never left this machine.</footer>
 </div></body></html>"""
 
 
@@ -1598,7 +1598,7 @@ def _skill_levels(result):
 # --------------------------------------------------------------------------- #
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Claude Insight v2 — AI fluency analyzer (one command, zero install).")
+    ap = argparse.ArgumentParser(description="AI Fluency v2 — how skillfully you build with AI (one command, zero install).")
     ap.add_argument("path", nargs="?", help="transcript dir or .jsonl file (default: ~/.claude/projects)")
     ap.add_argument("-o", "--out", default="ai_fluency_report.html", help="HTML output path")
     ap.add_argument("--json", action="store_true", help="print raw metrics as JSON and exit")
