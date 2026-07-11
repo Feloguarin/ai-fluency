@@ -619,7 +619,7 @@ class TestPersonalizedGrowthAndQuiet(unittest.TestCase):
         # the personalized growth card is rendered, with Opus's tailored rewrite of a real prompt
         self.assertIn("TAILORED-REWRITE-TOKEN", html)
         self.assertIn("written for you", html)
-        self.assertIn("Tailored rewrite for you", html)
+        self.assertIn("How to write it instead", html)
         # and the generic stock example is NOT in the improve section anymore
         self.assertNotIn("session cookie", html)
 

@@ -1934,6 +1934,22 @@ def _analysis_section_html(analysis):
     return "".join(parts)
 
 
+# Human-friendly source labels for the report.
+NICE_SOURCE = {"claude-code": "Claude Code", "claude-desktop": "Cowork (Claude desktop)",
+               "codex": "Codex / ChatGPT app", "cursor": "Cursor"}
+
+
+def _dim_sources_note(result, name, n_sources):
+    """'measured from: …' provenance on a combined report's dimension row (only when it
+    is NOT fed by every source — the common all-sources case needs no callout)."""
+    dim_sources = result.get("dim_sources") or {}
+    feeding = dim_sources.get(name) or []
+    if not feeding or n_sources <= 1 or len(feeding) == n_sources:
+        return ""
+    names = ", ".join(NICE_SOURCE.get(s, s) for s in feeding)
+    return f'<span class="wt"> · measured from {_esc(names)}</span>'
+
+
 def _growth_cards_html(analysis):
     """The 'how to grow' cards, written FOR THIS PERSON by the Opus analysis stage:
     each item names the habit, why it matters, how to grow it, and a before/after where
@@ -1946,18 +1962,29 @@ def _growth_cards_html(analysis):
     if not items:
         return ""
     out = []
-    for i, g in enumerate(items[:3]):
+    for i, g in enumerate(items[:4]):
         title = _esc(g.get("title", "Your next growth move"))
         why = _esc(g.get("why", ""))
         how = _esc(g.get("how", ""))
         before = g.get("example_before")
         after = g.get("example_after")
+        src = g.get("source")
+        src_tag = f" · in {_esc(NICE_SOURCE.get(src, src))}" if src else ""
         ba = ""
         if before and after:
-            ba = (f'<div class="ba"><div class="before"><span>A prompt you wrote</span>'
+            works = g.get("why_it_works")
+            works_html = ""
+            if isinstance(works, list) and works:
+                works_html = ('<ul class="works">' +
+                              "".join(f"<li>{_esc(str(w)[:200])}</li>" for w in works[:3]) +
+                              "</ul>")
+            gain = g.get("expected_gain")
+            gain_html = (f'<p class="gain"><b>What you should see:</b> {_esc(str(gain)[:260])}</p>'
+                         if gain else "")
+            ba = (f'<div class="ba"><div class="before"><span>A prompt you wrote{src_tag}</span>'
                   f'“{_esc(str(before)[:400])}”</div>'
-                  f'<div class="after"><span>Tailored rewrite for you</span>'
-                  f'“{_esc(str(after)[:600])}”</div></div>')
+                  f'<div class="after"><span>How to write it instead</span>'
+                  f'“{_esc(str(after)[:600])}”</div></div>' + works_html + gain_html)
         out.append(
             f'<div class="card prio"><div class="ph">Priority {i + 1} · written for you</div>'
             f'<h4>{title}</h4>'
@@ -2123,6 +2150,42 @@ def build_html(corpus, result, cards, strength, archive_info=None, analysis=None
             return f"{det.get('distinct', 0)} distinct tools, evenness {det.get('evenness', 0.0):.2f}, {det.get('delegation_events', 0)} delegations"
         return ""
 
+    # source-aware framing (single tool vs the combined all-sources picture)
+    combined = bool(result.get("combined"))
+    srcs = result.get("sources") or []
+    if combined:
+        tool_list = ", ".join(NICE_SOURCE.get(s["source"], s["source"]) for s in srcs)
+        sub_line = (f"One picture of how you actually build with AI — measured from your real "
+                    f"prompts and the agents' real actions across {tool_list}, analyzed "
+                    f"entirely on your machine.")
+        hero_srcline = (f'<div class="rawnote">one score across {len(srcs)} tools · '
+                        f'{len(corpus.real_prompts):,} prompts</div>')
+    else:
+        nice_src = NICE_SOURCE.get(source, source or "Claude Code")
+        sub_line = (f"A read of how you actually drive {nice_src} — measured from your real "
+                    f"prompts and the agent's real actions, analyzed entirely on your machine.")
+        hero_srcline = ""
+
+    # combined runs: the source-mix panel (per-tool sub-scores, honestly labeled)
+    source_mix_html = ""
+    if combined and srcs:
+        tiles = ""
+        for s in srcs:
+            na_note = (f'<div class="sm-na">{", ".join(disp(n) for n in s["not_measurable"])} '
+                       f'not measurable</div>') if s["not_measurable"] else ""
+            tiles += (f'<div class="src"><div class="sn">{_esc(NICE_SOURCE.get(s["source"], s["source"]))}</div>'
+                      f'<div class="sv">{s["overall"]}<span class="hint">/100</span> '
+                      f'<span class="sb">{_esc(s["band"])}</span></div>'
+                      f'<div class="sd">{s["real_prompts"]:,} prompts · {s["sessions"]} sessions · '
+                      f'{s["active_hours"]:.0f} h</div>{na_note}</div>')
+        source_mix_html = (
+            '<section><h3>Where this comes from</h3>'
+            '<p class="exgen" style="margin-bottom:12px">Per-tool sub-scores, measured '
+            'independently. The headline above blends each dimension only from the tools that '
+            'can observe it, weighted by how much evidence each contributed — a tool that '
+            'can\'t show a habit never drags it down.</p>'
+            f'<div class="src-grid">{tiles}</div></section>')
+
     # dimension bars — masked (not-measurable) dimensions render last, without a score
     dim_html = ""
     na_set = set(result.get("na_dims") or [])
@@ -2159,7 +2222,7 @@ def build_html(corpus, result, cards, strength, archive_info=None, analysis=None
         <div class="top"><span class="name">{_esc(disp(name))} {tag}{ld}</span><span class="sval">{sc}<span class="hint">/100</span></span></div>
         <div class="bar"><i style="width:{sc}%"></i></div>
         <p class="def">{_esc(DIM_BLURB[name])}</p>
-        <p class="rate">{_esc(dim_rate_line(name))}<span class="wt"> · weight {int(WEIGHTS[name]*100)}%</span></p>
+        <p class="rate">{_esc(dim_rate_line(name))}<span class="wt"> · weight {int(WEIGHTS[name]*100)}%</span>{_dim_sources_note(result, name, len(srcs))}</p>
       </div>"""
 
     # archetype affinity
@@ -2404,13 +2467,23 @@ details{{background:var(--p);border:1px solid var(--line);border-radius:12px;pad
 summary{{cursor:pointer;color:var(--mut);font-size:14px}} details p,details li{{color:var(--mut);font-size:13px;margin-top:8px}}
 footer{{text-align:center;color:var(--mut);font-size:13px;margin-top:46px}}
 code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
+.src-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}}
+.src{{background:var(--card);border:1px solid #23264a;border-radius:12px;padding:14px 16px}}
+.src .sn{{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut)}}
+.src .sv{{font-size:26px;font-weight:700;margin-top:4px}}
+.src .sv .sb{{font-size:12px;font-weight:400;color:var(--mut);margin-left:6px}}
+.src .sd{{font-size:12px;color:var(--mut);margin-top:6px}}
+.src .sm-na{{font-size:11.5px;color:var(--warn);margin-top:6px}}
+.works{{margin:10px 0 0 18px;font-size:13px;color:var(--mut)}}
+.works li{{margin-top:4px}}
+.gain{{margin-top:10px;font-size:13px;color:var(--ok,#3ad6c9)}}
 @media(max-width:640px){{.ba{{grid-template-columns:1fr}}.bl{{min-width:120px}}}}
 </style></head><body><div class="wrap">
 
 <header>
   <div class="kick">AI Fluency Report</div>
   <h1>How skillfully you build with AI</h1>
-  <p class="sub">A read of how you actually drive Claude Code — measured from your real prompts and Claude's real actions, analyzed entirely on your machine.</p>
+  <p class="sub">{_esc(sub_line)}</p>
 </header>
 
 {prov_banner}
@@ -2428,6 +2501,7 @@ code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
     </div>
     <div class="band">{_esc(result['band'])}</div>
     <div class="rawnote">raw {result['overall_raw']} · confidence-adjusted {result['overall']}</div>
+    {hero_srcline}
   </div>
   <div class="arch">
     <div class="emoji">{PROTOTYPES[a['primary']]['emoji']}</div>
@@ -2438,6 +2512,8 @@ code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
     {arch_hedge}
   </div>
 </div>
+
+{source_mix_html}
 
 <section>
   <h3>Professional assessment</h3>
