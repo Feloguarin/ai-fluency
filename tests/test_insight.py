@@ -633,5 +633,105 @@ class TestPersonalizedGrowthAndQuiet(unittest.TestCase):
         self.assertIn("not</b> from your sessions", html)
 
 
+class TestClaudeCodeGolden(unittest.TestCase):
+    """Locks the claude-code pipeline's output byte-for-byte (adapter-refactor guard).
+
+    The fixture exercises every branch of the claude-code parse path: multi-project
+    discovery, subagent exclusion, every de-contamination drop reason, tool extraction
+    (incl. MCP de-namespacing, background bash, delegation tools), gap-capped active
+    time, and unparseable/typeless records. The golden file was generated from the
+    pre-adapter-refactor engine; any behavior drift in the claude-code path fails here.
+    Regenerate (only for an INTENTIONAL behavior change) with:
+        python3 tests/regen_goldens.py
+    """
+
+    maxDiff = None
+
+    @staticmethod
+    def build_fixture(root):
+        big_paste = "x" * 6100
+        a = os.path.join(root, "projA")
+        b = os.path.join(root, "projB")
+        sub = os.path.join(root, "projA", "subagents")
+        for d in (a, b, sub):
+            os.makedirs(d, exist_ok=True)
+        write_session(a, "sess-aaa.jsonl", [
+            user_text("Fix the login flow in `auth.py` — it must only accept POST, "
+                      "never GET, so that the session token can't leak into logs.",
+                      ts="2026-01-02T10:00:00Z"),
+            assistant_tool("Read", ts="2026-01-02T10:00:30Z", file_path="/tmp/app/auth.py"),
+            assistant_tool("Edit", ts="2026-01-02T10:01:00Z", file_path="/tmp/app/auth.py"),
+            assistant_tool("Bash", ts="2026-01-02T10:01:30Z", command="python3 -m pytest -q"),
+            user_tool_result(ts="2026-01-02T10:01:35Z"),
+            user_text("no, that's wrong — revert the decorator change and try again",
+                      ts="2026-01-02T10:02:00Z"),
+            assistant_tool("mcp__abc123__slack_send_message", ts="2026-01-02T10:02:30Z",
+                           channel="C1", text="done"),
+            _rec(type="assistant", timestamp="2026-01-02T10:06:40Z",
+                 message={"role": "assistant", "content": [
+                     {"type": "tool_use", "name": "Bash",
+                      "input": {"command": "npm run build", "run_in_background": True}}]}),
+            assistant_tool("Agent", ts="2026-01-02T10:07:10Z", prompt="review the diff"),
+            "this line is not json {",
+            _rec(type="summary", timestamp="2026-01-02T10:12:10Z", summary="compacted"),
+        ])
+        write_session(a, "sess-bbb.jsonl", [
+            user_text("sidechain question", ts="2026-01-03T09:00:00Z", isSidechain=True),
+            user_text("meta note", ts="2026-01-03T09:00:10Z", isMeta=True),
+            user_text("<system-reminder>injected harness text</system-reminder>",
+                      ts="2026-01-03T09:00:20Z"),
+            user_text("   ", ts="2026-01-03T09:00:30Z"),
+            user_text(big_paste, ts="2026-01-03T09:00:40Z"),
+            user_text("add tests for the parser edge cases", ts="2026-01-03T09:01:00Z"),
+            assistant_tool("Write", ts="2026-01-03T09:01:30Z",
+                           file_path="/tmp/app/tests/test_parser.py"),
+        ])
+        write_session(b, "sess-ccc.jsonl", [
+            user_text("I need a CSV export so that finance can reconcile invoices",
+                      ts="2026-02-01T15:00:00Z"),
+            assistant_tool("Grep", ts="2026-02-01T15:00:20Z", pattern="invoice"),
+            assistant_tool("Edit", ts="2026-02-01T15:00:40Z", file_path="/tmp/app/export.py"),
+            user_text("perfect, exactly what I wanted", ts="2026-02-01T15:01:00Z"),
+        ])
+        write_session(sub, "sub-xyz.jsonl", [
+            user_text("subagent transcript prompt — must be excluded by discovery",
+                      ts="2026-02-02T08:00:00Z"),
+        ])
+        return root
+
+    @staticmethod
+    def snapshot(corpus, result):
+        return json.loads(json.dumps({
+            "files": corpus.files,
+            "projects": sorted(corpus.projects),
+            "total_bytes": corpus.total_bytes,
+            "user_records": corpus.user_records,
+            "filtered": dict(corpus.filtered),
+            "real_prompts": corpus.real_prompts,
+            "tool_usage": dict(corpus.tool_usage),
+            "total_tool_calls": corpus.total_tool_calls,
+            "delegation_events": corpus.delegation_events,
+            "first_ts": corpus.first_ts.isoformat() if corpus.first_ts else None,
+            "last_ts": corpus.last_ts.isoformat() if corpus.last_ts else None,
+            "active_seconds": round(corpus.active_seconds, 6),
+            "sessions": corpus.sessions,
+            "analysis": result,
+        }))
+
+    def test_pipeline_matches_pre_refactor_golden(self):
+        golden_path = os.path.join(os.path.dirname(__file__), "goldens_claude_code.json")
+        with open(golden_path, encoding="utf-8") as fh:
+            golden = json.load(fh)
+        with tempfile.TemporaryDirectory() as td:
+            self.build_fixture(td)
+            files = insight.discover_files(td)
+            # Discovery must skip the subagents/ transcript but keep the three sessions.
+            self.assertEqual([os.path.basename(f) for f in files],
+                             ["sess-aaa.jsonl", "sess-bbb.jsonl", "sess-ccc.jsonl"])
+            corpus = insight.parse(files)
+            result = insight.analyze(corpus)
+            self.assertEqual(self.snapshot(corpus, result), golden)
+
+
 if __name__ == "__main__":
     unittest.main()

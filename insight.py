@@ -438,24 +438,66 @@ def archive_transcripts(live_files, archive_dir):
     return new, updated
 
 
-def parse(files):
-    c = Corpus()
-    c.files = len(files)
-    for path in files:
+# --------------------------------------------------------------------------- #
+# Source adapters
+#
+# Each source of transcripts (Claude Code today; Cowork/Codex/Cursor as they land) is a
+# small adapter that normalizes its on-disk format into one event stream:
+#
+#   {"role": "session", "project": str, "session_id": str}   — starts a session
+#   {"role": "ts",      "ts": <raw timestamp>}               — active-time tick
+#   {"role": "user",    "text": str}                         — a real, human-typed prompt
+#   {"role": "tool",    "name": str, "file": ..., "cmd": ..., "meta": {...}}
+#   {"role": "drop",    "reason": str}                       — a de-contaminated user record
+#
+# De-contamination lives IN the adapter (each source knows its own noise); scoring
+# consumes only the normalized stream, so the scorers never learn about sources.
+# --------------------------------------------------------------------------- #
+
+def _claude_tool_event(b):
+    """Map one Claude-style tool_use block to a normalized tool event. `name` keeps its
+    de-namespaced case for tool_usage; parse() lowercases it for the canonical vocabulary.
+    mcp__<ns>__bash de-namespaces to 'bash', so its input.command is picked up for free."""
+    raw = b.get("name", "unknown")
+    name = _denamespace_tool(raw)
+    inp = b.get("input", {}) if isinstance(b.get("input"), dict) else {}
+    fpath = inp.get("file_path") or inp.get("path") or inp.get("notebook_path")
+    cmd = inp.get("command") if name.lower() == "bash" else None
+    meta = {}
+    if name.lower() == "bash" and inp.get("run_in_background"):
+        meta["background"] = True   # a hand-off: counts toward delegation
+    return {"role": "tool", "name": name, "file": fpath, "cmd": cmd, "meta": meta}
+
+
+class ClaudeCodeAdapter:
+    """Claude Code — ~/.claude/projects/**/*.jsonl. The original (and reference) source."""
+
+    name = "claude-code"
+    archive_enabled = True
+    capabilities = {"prompts": True, "edits": True, "verify": True,
+                    "reads": True, "delegation": True}
+
+    @staticmethod
+    def detect():
+        if os.environ.get("CLAUDE_PROJECTS_DIR"):
+            return True
+        return any(os.path.isdir(os.path.expanduser(d)) for d in DEFAULT_DIRS)
+
+    @staticmethod
+    def discover(explicit):
+        return discover_files(explicit)
+
+    @staticmethod
+    def iter_events(path):
+        # The header carries the project (parent-dir name) and session id (filename) and is
+        # yielded before opening the file, so even an unreadable file still registers its project.
         project = os.path.basename(os.path.dirname(path)) or "default"
-        c.projects.add(project)
-        try:
-            c.total_bytes += os.path.getsize(path)
-        except OSError:
-            pass
         session_id = os.path.splitext(os.path.basename(path))[0]
-        timeline = []
-        ts_in_file = []
-        prompt_idx = 0
+        yield {"role": "session", "project": project, "session_id": session_id}
         try:
             fh = open(path, encoding="utf-8")
         except OSError:
-            continue
+            return
         with fh:
             for line in fh:
                 line = line.strip()
@@ -465,11 +507,9 @@ def parse(files):
                     e = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                ts = _parse_ts(e.get("timestamp"))
-                if ts:
-                    ts_in_file.append(ts)
-                    c.first_ts = ts if c.first_ts is None or ts < c.first_ts else c.first_ts
-                    c.last_ts = ts if c.last_ts is None or ts > c.last_ts else c.last_ts
+                ts = e.get("timestamp")
+                if ts is not None:
+                    yield {"role": "ts", "ts": ts}
                 msg = e.get("message") if isinstance(e.get("message"), dict) else {}
                 role = e.get("role") or msg.get("role") or e.get("type")
                 content = msg.get("content", e.get("content"))
@@ -478,56 +518,121 @@ def parse(files):
                     if isinstance(content, list):
                         for b in content:
                             if isinstance(b, dict) and b.get("type") == "tool_use":
-                                raw = b.get("name", "unknown")
-                                name = _denamespace_tool(raw)
-                                c.tool_usage[name] += 1
-                                c.total_tool_calls += 1
-                                inp = b.get("input", {}) if isinstance(b.get("input"), dict) else {}
-                                if name.lower() in DELEGATION_TOOLS:
-                                    c.delegation_events += 1
-                                if name.lower() == "bash" and inp.get("run_in_background"):
-                                    c.delegation_events += 1
-                                fpath = inp.get("file_path") or inp.get("path") or inp.get("notebook_path")
-                                cmd = inp.get("command") if name.lower() == "bash" else None
-                                timeline.append({
-                                    "kind": "tool", "name": name.lower(),
-                                    "file": fpath, "cmd": cmd,
-                                })
+                                yield _claude_tool_event(b)
                     continue
 
                 if role != "user":
                     continue
-                c.user_records += 1
                 if _is_tool_result(content):
-                    c.filtered["tool results"] += 1
+                    yield {"role": "drop", "reason": "tool results"}
                     continue
                 if e.get("isSidechain") is True:
-                    c.filtered["subagent turns"] += 1
+                    yield {"role": "drop", "reason": "subagent turns"}
                     continue
                 if e.get("isMeta") is True:
-                    c.filtered["meta-injected"] += 1
+                    yield {"role": "drop", "reason": "meta-injected"}
                     continue
                 text = _text_of(content).strip()
                 if not text:
-                    c.filtered["empty"] += 1
+                    yield {"role": "drop", "reason": "empty"}
                     continue
                 if _looks_injected(text):
-                    c.filtered["injected / pasted"] += 1
+                    yield {"role": "drop", "reason": "injected / pasted"}
                     continue
-                # A genuine, human-typed prompt.
-                prompt_idx += 1
-                rec = {"text": text, "project": project, "session": session_id, "idx": prompt_idx}
-                c.real_prompts.append(rec)
-                timeline.append({"kind": "prompt", "text": text, "rec": rec})
+                yield {"role": "user", "text": text}
 
-        if len(ts_in_file) >= 2:
-            ts_in_file.sort()
+
+ADAPTERS = {a.name: a for a in (ClaudeCodeAdapter,)}
+
+
+def get_adapter(name):
+    return ADAPTERS.get(name)
+
+
+def detect_adapter():
+    """First source whose data is present on this machine; claude-code wins ties."""
+    for a in ADAPTERS.values():
+        try:
+            if a.detect():
+                return a
+        except Exception:
+            continue
+    return ClaudeCodeAdapter
+
+
+def parse(files, adapter=None):
+    """Build a Corpus from `files` using `adapter` (default: Claude Code). Source-agnostic:
+    it consumes the adapter's normalized event stream and accounts every field the scorers
+    depend on, so adding a source never touches this function or the scorers."""
+    if adapter is None:
+        adapter = ClaudeCodeAdapter
+    c = Corpus()
+    c.files = len(files)
+
+    def _flush(cur):
+        # Gap-capped active time is computed per session window; a new `session` header
+        # flushes the prior one. Single-header sources (one session per file) flush once at
+        # EOF, so their numbers are identical to the old per-file computation.
+        ts_in = cur["ts"]
+        if len(ts_in) >= 2:
+            ts_in.sort()
             c.active_seconds += sum(
-                min((ts_in_file[i + 1] - ts_in_file[i]).total_seconds(), GAP_CAP_SECONDS)
-                for i in range(len(ts_in_file) - 1)
+                min((ts_in[i + 1] - ts_in[i]).total_seconds(), GAP_CAP_SECONDS)
+                for i in range(len(ts_in) - 1)
             )
-        if timeline:
-            c.sessions[session_id] = {"project": project, "timeline": timeline}
+        if cur["timeline"]:
+            c.sessions[cur["session_id"]] = {"project": cur["project"], "timeline": cur["timeline"]}
+
+    for path in files:
+        try:
+            c.total_bytes += os.path.getsize(path)
+        except OSError:
+            pass
+        cur = {"project": "default",
+               "session_id": os.path.splitext(os.path.basename(path))[0],
+               "timeline": [], "ts": [], "idx": 0}
+        for ev in adapter.iter_events(path):
+            role = ev.get("role")
+            if role == "session":
+                _flush(cur)
+                cur = {"project": ev.get("project") or "default",
+                       "session_id": ev.get("session_id") or cur["session_id"],
+                       "timeline": [], "ts": [], "idx": 0}
+                c.projects.add(cur["project"])
+                continue
+            if role == "ts":
+                ts = _parse_ts(ev.get("ts"))
+                if ts:
+                    cur["ts"].append(ts)
+                    c.first_ts = ts if c.first_ts is None or ts < c.first_ts else c.first_ts
+                    c.last_ts = ts if c.last_ts is None or ts > c.last_ts else c.last_ts
+                continue
+            if role == "drop":
+                c.user_records += 1
+                c.filtered[ev.get("reason", "filtered")] += 1
+                continue
+            if role == "user":
+                c.user_records += 1
+                cur["idx"] += 1
+                text = ev.get("text", "")
+                rec = {"text": text, "project": cur["project"],
+                       "session": cur["session_id"], "idx": cur["idx"]}
+                c.real_prompts.append(rec)
+                cur["timeline"].append({"kind": "prompt", "text": text, "rec": rec})
+                continue
+            if role == "tool":
+                name = ev.get("name", "unknown")
+                c.tool_usage[name] += 1
+                c.total_tool_calls += 1
+                lname = name.lower()
+                if lname in DELEGATION_TOOLS:
+                    c.delegation_events += 1
+                if isinstance(ev.get("meta"), dict) and ev["meta"].get("background"):
+                    c.delegation_events += 1
+                cur["timeline"].append({"kind": "tool", "name": lname,
+                                        "file": ev.get("file"), "cmd": ev.get("cmd")})
+                continue
+        _flush(cur)
     return c
 
 

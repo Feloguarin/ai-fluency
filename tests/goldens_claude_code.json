@@ -1,0 +1,314 @@
+{
+  "active_seconds": 880.0,
+  "analysis": {
+    "archetype": {
+      "all": [
+        [
+          0.271,
+          "Autonomous Agent"
+        ],
+        [
+          0.242,
+          "Sprinter"
+        ],
+        [
+          -0.499,
+          "Architect"
+        ],
+        [
+          -0.59,
+          "Collaborator"
+        ],
+        [
+          -0.706,
+          "Debugger"
+        ]
+      ],
+      "blended": true,
+      "blurb": "You delegate whole, end-to-end jobs and trust the agent to run them \u2014 you set the outcome and let Claude pick the steps.",
+      "delegation_score": 100,
+      "label": "\ud83e\udd16 Autonomous Agent, with a Sprinter streak",
+      "primary": "Autonomous Agent",
+      "primary_sim": 0.271,
+      "secondary": "Sprinter",
+      "secondary_sim": 0.242
+    },
+    "band": "Developing",
+    "band_meaning": "Real back-and-forth is emerging and one or two habits are solid. Some prompts carry a file path or a constraint; verification happens occasionally. The gap to the next level is consistency \u2014 doing the right thing by default, not just sometimes.",
+    "conf": {
+      "Context": 0.12,
+      "Direction": 0.08333333333333333,
+      "Iteration": 0.4166666666666667,
+      "Toolcraft": 0.225,
+      "Verification": 0.2
+    },
+    "detail": {
+      "Context": {
+        "grounded": 2,
+        "n": 3,
+        "rate": 0.6666666666666666,
+        "total_edits": 3
+      },
+      "Direction": {
+        "artifact_rate": 0.2,
+        "constraint_rate": 0.2,
+        "front_loading": 0.6666666666666667,
+        "intent_rate": 0.6,
+        "n": 5
+      },
+      "Iteration": {
+        "correction_rate": 0.2,
+        "corrections": 1,
+        "n": 5,
+        "specificity": 1.0
+      },
+      "Toolcraft": {
+        "delegation_events": 2,
+        "distinct": 7,
+        "evenness": 0.9708357627258161,
+        "n": 9
+      },
+      "Verification": {
+        "episodes": 3,
+        "n": 3,
+        "rate": 0.3333333333333333,
+        "teardown_bonus": 0,
+        "verified": 1
+      }
+    },
+    "dist": {
+      "mean_chars": 60,
+      "median_chars": 58,
+      "median_words": 11,
+      "under_80_pct": 80
+    },
+    "evidence": {
+      "Context": [
+        {
+          "file": "/tmp/app/export.py",
+          "project": "projB",
+          "session": "sess-ccc"
+        }
+      ],
+      "Direction": [
+        {
+          "idx": 2,
+          "project": "projA",
+          "session": "sess-aaa",
+          "text": "no, that's wrong \u2014 revert the decorator change and try again"
+        }
+      ],
+      "Iteration": [],
+      "Toolcraft": [],
+      "Verification": [
+        {
+          "files": "test_parser.py",
+          "project": "projA",
+          "session": "sess-bbb"
+        },
+        {
+          "files": "export.py",
+          "project": "projB",
+          "session": "sess-ccc"
+        }
+      ]
+    },
+    "fingerprint": "0968571afc03b81b",
+    "overall": 53,
+    "overall_raw": 66,
+    "raw": {
+      "Context": 78.43137254901961,
+      "Direction": 63.888888888888886,
+      "Iteration": 65.71428571428571,
+      "Toolcraft": 69.87507288177449,
+      "Verification": 55.55555555555556
+    },
+    "shrunk": {
+      "Context": 53.411764705882355,
+      "Direction": 51.157407407407405,
+      "Iteration": 56.547619047619044,
+      "Toolcraft": 54.47189139839926,
+      "Verification": 51.111111111111114
+    }
+  },
+  "delegation_events": 2,
+  "files": 3,
+  "filtered": {
+    "empty": 1,
+    "injected / pasted": 2,
+    "meta-injected": 1,
+    "subagent turns": 1,
+    "tool results": 1
+  },
+  "first_ts": "2026-01-02T10:00:00+00:00",
+  "last_ts": "2026-02-01T15:01:00+00:00",
+  "projects": [
+    "projA",
+    "projB"
+  ],
+  "real_prompts": [
+    {
+      "idx": 1,
+      "project": "projA",
+      "session": "sess-aaa",
+      "text": "Fix the login flow in `auth.py` \u2014 it must only accept POST, never GET, so that the session token can't leak into logs."
+    },
+    {
+      "idx": 2,
+      "project": "projA",
+      "session": "sess-aaa",
+      "text": "no, that's wrong \u2014 revert the decorator change and try again"
+    },
+    {
+      "idx": 1,
+      "project": "projA",
+      "session": "sess-bbb",
+      "text": "add tests for the parser edge cases"
+    },
+    {
+      "idx": 1,
+      "project": "projB",
+      "session": "sess-ccc",
+      "text": "I need a CSV export so that finance can reconcile invoices"
+    },
+    {
+      "idx": 2,
+      "project": "projB",
+      "session": "sess-ccc",
+      "text": "perfect, exactly what I wanted"
+    }
+  ],
+  "sessions": {
+    "sess-aaa": {
+      "project": "projA",
+      "timeline": [
+        {
+          "kind": "prompt",
+          "rec": {
+            "idx": 1,
+            "project": "projA",
+            "session": "sess-aaa",
+            "text": "Fix the login flow in `auth.py` \u2014 it must only accept POST, never GET, so that the session token can't leak into logs."
+          },
+          "text": "Fix the login flow in `auth.py` \u2014 it must only accept POST, never GET, so that the session token can't leak into logs."
+        },
+        {
+          "cmd": null,
+          "file": "/tmp/app/auth.py",
+          "kind": "tool",
+          "name": "read"
+        },
+        {
+          "cmd": null,
+          "file": "/tmp/app/auth.py",
+          "kind": "tool",
+          "name": "edit"
+        },
+        {
+          "cmd": "python3 -m pytest -q",
+          "file": null,
+          "kind": "tool",
+          "name": "bash"
+        },
+        {
+          "kind": "prompt",
+          "rec": {
+            "idx": 2,
+            "project": "projA",
+            "session": "sess-aaa",
+            "text": "no, that's wrong \u2014 revert the decorator change and try again"
+          },
+          "text": "no, that's wrong \u2014 revert the decorator change and try again"
+        },
+        {
+          "cmd": null,
+          "file": null,
+          "kind": "tool",
+          "name": "slack_send_message"
+        },
+        {
+          "cmd": "npm run build",
+          "file": null,
+          "kind": "tool",
+          "name": "bash"
+        },
+        {
+          "cmd": null,
+          "file": null,
+          "kind": "tool",
+          "name": "agent"
+        }
+      ]
+    },
+    "sess-bbb": {
+      "project": "projA",
+      "timeline": [
+        {
+          "kind": "prompt",
+          "rec": {
+            "idx": 1,
+            "project": "projA",
+            "session": "sess-bbb",
+            "text": "add tests for the parser edge cases"
+          },
+          "text": "add tests for the parser edge cases"
+        },
+        {
+          "cmd": null,
+          "file": "/tmp/app/tests/test_parser.py",
+          "kind": "tool",
+          "name": "write"
+        }
+      ]
+    },
+    "sess-ccc": {
+      "project": "projB",
+      "timeline": [
+        {
+          "kind": "prompt",
+          "rec": {
+            "idx": 1,
+            "project": "projB",
+            "session": "sess-ccc",
+            "text": "I need a CSV export so that finance can reconcile invoices"
+          },
+          "text": "I need a CSV export so that finance can reconcile invoices"
+        },
+        {
+          "cmd": null,
+          "file": null,
+          "kind": "tool",
+          "name": "grep"
+        },
+        {
+          "cmd": null,
+          "file": "/tmp/app/export.py",
+          "kind": "tool",
+          "name": "edit"
+        },
+        {
+          "kind": "prompt",
+          "rec": {
+            "idx": 2,
+            "project": "projB",
+            "session": "sess-ccc",
+            "text": "perfect, exactly what I wanted"
+          },
+          "text": "perfect, exactly what I wanted"
+        }
+      ]
+    }
+  },
+  "tool_usage": {
+    "Agent": 1,
+    "Bash": 2,
+    "Edit": 2,
+    "Grep": 1,
+    "Read": 1,
+    "Write": 1,
+    "slack_send_message": 1
+  },
+  "total_bytes": 9502,
+  "total_tool_calls": 9,
+  "user_records": 11
+}
