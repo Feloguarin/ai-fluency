@@ -139,6 +139,12 @@ session scores Briefing/Iteration only.
 
 ## 7. Out of scope (unchanged from v1)
 
-Merging sources into one blended score (different tools, different baselines — one report
-per source in v1; `--source all` loops). Claude.ai web chat. Cursor Tab/autocomplete
-telemetry. Rewriting any source file, ever.
+Claude.ai web chat. Cursor Tab/autocomplete telemetry. Rewriting any source file, ever.
+
+**Superseded 2026-07-11 (product decision by Felipe):** the v1 "never blend sources into
+one score" rule. `--source all` now produces ONE combined report — one score, one profile —
+assembled honestly: each dimension is scored over the merged data of only the sources that
+can observe it (capability masks), evidence volume drives the usual shrinkage, and per-tool
+sub-scores render in the report's source-mix panel. The blend never imputes an unobservable
+signal, which is what the v1 rule actually protected. Implemented in the C1-C3 commit
+series; the /ai-fluency skill runs combined by default.

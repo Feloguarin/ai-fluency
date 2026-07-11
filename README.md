@@ -95,18 +95,25 @@ If the Workflow capability isn't available, the skill still produces the complet
 deterministic report — scores, archetype, dimensions, and skill levels — with generic,
 clearly-labeled growth examples instead of the Opus-written ones.
 
-## 🔌 More sources than Claude Code
+## 🔌 More sources than Claude Code — one score across all of them
 
 The same engine reads other coding agents' local logs through source adapters — same
-de-contamination discipline, same rate-based scoring, one report per source (scores are
-never blended across tools: different tools have different baselines):
+de-contamination discipline, same rate-based scoring. `--source all` (what `/ai-fluency`
+runs) combines every tool on the machine into **one score and one profile**, with per-tool
+sub-scores shown in a "where this comes from" panel:
 
 ```bash
-python3 insight.py --source claude-desktop   # Cowork (Claude desktop agent mode)
+python3 insight.py --source all              # ONE combined report across every tool found
+python3 insight.py --source claude-desktop   # or a single source: Cowork (Claude desktop)
 python3 insight.py --source codex            # OpenAI Codex — CLI and the ChatGPT desktop app
 python3 insight.py --source cursor           # Cursor IDE (agent + chat sessions)
-python3 insight.py --source all              # one report per source found on this machine
 ```
+
+**How the blend stays honest.** Each dimension is scored over the merged data of only the
+tools that can observe it, weighted naturally by how much evidence each contributed — so
+Codex (which has no read tool) never drags down Context-setting, and a chat-only tool never
+looks like it "never verifies." A tool that can't show a habit simply doesn't vote on it;
+the per-dimension confidence shrinkage then works exactly as it does for a single source.
 
 | Source | What it reads | Coverage |
 |---|---|---|
