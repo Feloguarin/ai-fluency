@@ -114,6 +114,14 @@
       ]
     },
     "fingerprint": "0968571afc03b81b",
+    "measurable": [
+      "Direction",
+      "Verification",
+      "Context",
+      "Iteration",
+      "Toolcraft"
+    ],
+    "na_dims": [],
     "overall": 53,
     "overall_raw": 66,
     "raw": {

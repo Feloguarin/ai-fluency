@@ -302,6 +302,18 @@ def _denamespace_tool(name):
     return name
 
 
+def _normalize_path(p):
+    """Strip machine-identifying home prefixes from a PATH so nothing personal leaks into
+    the corpus/evidence: /Users/<name>/x -> ~/x, bare /Users/<name> -> ~ (else basename
+    would surface the username). Sources whose logs embed absolute paths (Codex diffs,
+    Cursor tool args) must run every path through this before emitting an event."""
+    if not p or not isinstance(p, str):
+        return p
+    p = re.sub(r"^(?:/Users/|/home/)[^/]+(?=/|$)", "~", p)
+    p = re.sub(r"^[A-Za-z]:\\Users\\[^\\]+(?=\\|$)", "~", p)
+    return p
+
+
 # Redact machine-identifying home paths from free text before it is shown in the report or
 # written to the evidence bundle. Applied only at PRESENTATION, never to the scored corpus,
 # so scores stay byte-identical.
@@ -723,7 +735,216 @@ class ClaudeDesktopAdapter:
                 yield {"role": "user", "text": text}
 
 
-ADAPTERS = {a.name: a for a in (ClaudeCodeAdapter, ClaudeDesktopAdapter)}
+# --- OpenAI Codex (CLI + the post-2026-07-09 ChatGPT desktop app) --------------------------- #
+
+_CODEX_ROOTS = ["~/.codex/sessions", "~/.codex/archived_sessions"]
+# NEVER widen discovery beyond rollout-*.jsonl under these roots: ~/.codex/auth.json holds
+# live OAuth tokens and config.toml can hold MCP credentials — they must not be ingested.
+
+# Wrappers the Codex harness injects into otherwise-user-role text (not human-typed).
+_CODEX_INJECT_PREFIXES = ("<environment_context>", "# agents.md instructions for",
+                          "<turn_aborted>", "# in app browser:", "<image")
+
+
+def _codex_args(a):
+    """Codex tool arguments arrive as a JSON-encoded STRING (sometimes already a dict)."""
+    if isinstance(a, dict):
+        return a
+    if isinstance(a, str):
+        try:
+            return json.loads(a)
+        except (ValueError, TypeError):
+            return {}
+    return {}
+
+
+def _codex_message_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(b.get("text", "") for b in content
+                        if isinstance(b, dict) and b.get("type") in ("input_text", "text"))
+    return ""
+
+
+def _codex_is_injected(text):
+    if _looks_injected(text):
+        return True
+    low = text.lstrip().lower()
+    return any(low.startswith(p) for p in _CODEX_INJECT_PREFIXES)
+
+
+def _codex_apply_patch_events(patch):
+    """A unified-diff string -> one edit/write event per file the patch touches."""
+    out = []
+    if not isinstance(patch, str):
+        return out
+    for line in patch.splitlines():
+        s = line.strip()
+        for marker, canon in (("*** Add File:", "write"),
+                              ("*** Update File:", "edit"),
+                              ("*** Delete File:", "edit")):
+            if s.startswith(marker):
+                out.append({"role": "tool", "name": canon,
+                            "file": _normalize_path(s[len(marker):].strip()),
+                            "cmd": None, "meta": {}})
+                break
+    return out
+
+
+def _codex_project(repo, cwd):
+    if isinstance(repo, str) and repo:
+        base = repo.rstrip("/").split("/")[-1]
+        if base.endswith(".git"):
+            base = base[:-4]
+        if base:
+            return base
+    if isinstance(cwd, str) and cwd:
+        return os.path.basename(cwd.rstrip("/")) or "codex"
+    return "codex"
+
+
+def _codex_response_events(payload):
+    """Map one Codex `response_item` payload to a list of normalized events (possibly empty)."""
+    ptype = payload.get("type")
+    if ptype == "message":
+        role = payload.get("role")
+        if role == "user":
+            text = _codex_message_text(payload.get("content")).strip()
+            if not text:
+                return [{"role": "drop", "reason": "empty"}]
+            if _codex_is_injected(text):
+                return [{"role": "drop", "reason": "injected / pasted"}]
+            return [{"role": "user", "text": text}]
+        if role in ("developer", "system"):
+            return [{"role": "drop", "reason": "system"}]   # harness prose; counted for transparency
+        return []   # assistant prose -> skipped (not a prompt, not an action)
+    if ptype == "function_call":
+        name = (payload.get("name") or "").strip()
+        args = _codex_args(payload.get("arguments"))
+        if name == "exec_command":
+            return [{"role": "tool", "name": "bash", "file": None,
+                     "cmd": args.get("cmd") or args.get("command"),
+                     "meta": {"workdir": args.get("workdir")}}]
+        if name == "update_plan":
+            return [{"role": "tool", "name": "enterplanmode", "file": None, "cmd": None, "meta": {}}]
+        if name:
+            fpath = _normalize_path(args.get("path")) if isinstance(args, dict) else None
+            return [{"role": "tool", "name": name.lower(), "file": fpath, "cmd": None, "meta": {}}]
+        return []
+    if ptype == "custom_tool_call":
+        name = (payload.get("name") or "").strip()
+        if name == "apply_patch":
+            return _codex_apply_patch_events(payload.get("input", ""))
+        if name:
+            return [{"role": "tool", "name": name.lower(), "file": None, "cmd": None, "meta": {}}]
+        return []
+    if ptype == "web_search_call":
+        action = payload.get("action") if isinstance(payload.get("action"), dict) else {}
+        return [{"role": "tool", "name": "web_search", "file": None, "cmd": None,
+                 "meta": {"query": action.get("query")}}]
+    if ptype == "tool_search_call":
+        return [{"role": "tool", "name": "tool_search", "file": None, "cmd": None, "meta": {}}]
+    if ptype == "image_generation_call":
+        return [{"role": "tool", "name": "image_generation", "file": None, "cmd": None, "meta": {}}]
+    return []   # reasoning / *_output / unknown payloads -> ignored (reasoning is ciphertext by design)
+
+
+class CodexAdapter:
+    """OpenAI Codex — ~/.codex/sessions/**/rollout-*.jsonl, written by both the Codex CLI and
+    the ChatGPT desktop app (which IS the Codex app since 2026-07-09). We read the
+    `response_item` stream only (the `event_msg` stream is parallel telemetry — using both
+    double-counts). `reads` is False: Codex has no read tool (files are read via shell), so
+    read-before-edit grounding (Context) is not reliably observable and is honestly marked
+    not-measurable rather than scored."""
+
+    name = "codex"
+    archive_enabled = False   # date-foldered and not auto-deleted; nothing to preserve
+    capabilities = {"prompts": True, "edits": True, "verify": True,
+                    "reads": False, "delegation": True}
+
+    @staticmethod
+    def detect():
+        return any(os.path.isdir(os.path.expanduser(r)) for r in _CODEX_ROOTS)
+
+    @staticmethod
+    def owns_file(path):
+        return os.path.basename(path).startswith("rollout-")
+
+    @staticmethod
+    def discover(explicit):
+        if explicit:
+            p = os.path.expanduser(explicit)
+            if os.path.isfile(p) and p.endswith(".jsonl"):
+                return [p]
+            if os.path.isdir(p):
+                got = sorted(glob.glob(os.path.join(p, "**", "rollout-*.jsonl"), recursive=True))
+                return got or sorted(glob.glob(os.path.join(p, "**", "*.jsonl"), recursive=True))
+            return []
+        files = []
+        for r in _CODEX_ROOTS:
+            rp = os.path.expanduser(r)
+            if os.path.isdir(rp):
+                files.extend(glob.glob(os.path.join(rp, "**", "rollout-*.jsonl"), recursive=True))
+        return sorted(set(files))
+
+    @staticmethod
+    def iter_events(path):
+        session_id = os.path.splitext(os.path.basename(path))[0]
+        header = None
+        pending = []   # events seen before session_meta is known -> attributed to the real session
+
+        try:
+            fh = open(path, encoding="utf-8")
+        except OSError:
+            yield {"role": "session", "project": "codex", "session_id": session_id}
+            return
+        with fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                typ = e.get("type")
+                payload = e.get("payload") if isinstance(e.get("payload"), dict) else {}
+                ts = e.get("timestamp")
+
+                if typ == "session_meta":
+                    git = payload.get("git") if isinstance(payload.get("git"), dict) else {}
+                    repo = git.get("repository_url") if git else None
+                    header = {"role": "session",
+                              "project": _codex_project(repo, payload.get("cwd")),
+                              "session_id": payload.get("id") or session_id}
+                    yield header
+                    if ts is not None:
+                        yield {"role": "ts", "ts": ts}
+                    for ev in pending:   # records seen before the header belong to this session
+                        yield ev
+                    pending = []
+                    continue
+
+                evs = []
+                if ts is not None:
+                    evs.append({"role": "ts", "ts": ts})
+                if typ == "response_item":
+                    evs.extend(_codex_response_events(payload))
+                # turn_context / event_msg / compacted contribute only their timestamp (active time)
+                if header is None:
+                    pending.extend(evs)
+                else:
+                    for ev in evs:
+                        yield ev
+        if header is None:
+            # no session_meta anywhere -> fall back to a default header, then the buffered events
+            yield {"role": "session", "project": "codex", "session_id": session_id}
+            for ev in pending:
+                yield ev
+
+
+ADAPTERS = {a.name: a for a in (ClaudeCodeAdapter, ClaudeDesktopAdapter, CodexAdapter)}
 
 
 def get_adapter(name):
@@ -1106,7 +1327,25 @@ def classify_archetype(dim_scores, delegation_score):
 # Analysis orchestration
 # --------------------------------------------------------------------------- #
 
-def analyze(corpus):
+def _measurable_dims(capabilities):
+    """Which dimensions a source can honestly observe. None -> all (the Claude Code default).
+    An unobservable dimension is excluded and the weights renormalize over the rest — it is
+    never scored as 0 and never guessed: honesty over coverage."""
+    if not capabilities:
+        return list(WEIGHTS)
+    cap = capabilities
+    out = []
+    if cap.get("prompts", True):
+        out += ["Direction", "Iteration"]
+    if cap.get("verify", True) and cap.get("edits", True):
+        out.append("Verification")
+    if cap.get("reads", True) and cap.get("edits", True):
+        out.append("Context")
+    out.append("Toolcraft")   # tool breadth is observable whenever any tool is used
+    return [n for n in WEIGHTS if n in out]   # keep canonical order
+
+
+def analyze(corpus, capabilities=None):
     raw, detail, evidence = {}, {}, {}
     for name, fn in (("Direction", score_direction), ("Verification", score_verification),
                      ("Context", score_context), ("Iteration", score_iteration),
@@ -1118,8 +1357,11 @@ def analyze(corpus):
     for name in raw:
         shrunk[name], conf[name] = shrink(raw[name], detail[name].get("n", 0), TARGET_N[name])
 
-    overall_raw = round(sum(WEIGHTS[n] * raw[n] for n in WEIGHTS))
-    overall = round(sum(WEIGHTS[n] * shrunk[n] for n in WEIGHTS))
+    measurable = _measurable_dims(capabilities)
+    na_dims = [n for n in WEIGHTS if n not in measurable]
+    wsum = sum(WEIGHTS[n] for n in measurable) or 1.0
+    overall_raw = round(sum(WEIGHTS[n] * raw[n] for n in measurable) / wsum)
+    overall = round(sum(WEIGHTS[n] * shrunk[n] for n in measurable) / wsum)
     band, band_meaning = band_for(overall)
     # Delegation is a user-driven archetype axis (handoffs per active hour).
     active_hours = max(corpus.active_seconds / 3600, 0.5)
@@ -1142,6 +1384,7 @@ def analyze(corpus):
         "raw": raw, "shrunk": shrunk, "conf": conf, "detail": detail, "evidence": evidence,
         "overall_raw": overall_raw, "overall": overall, "band": band, "band_meaning": band_meaning,
         "archetype": archetype, "dist": dist, "fingerprint": _run_fingerprint(corpus),
+        "measurable": measurable, "na_dims": na_dims,
     }
 
 
@@ -1149,8 +1392,9 @@ def build_action_plan(corpus, result):
     """Growth cards ranked by impact = (target - score) * weight. The teaching copy
     comes from SKILL_TEACH; user-specific evidence comes from result['evidence']."""
     TARGET = 85
+    dims = result.get("measurable") or list(WEIGHTS)   # never coach an unmeasured dimension
     cards = []
-    for name in WEIGHTS:
+    for name in dims:
         score = result["shrunk"][name]
         impact = (TARGET - score) * WEIGHTS[name]
         cards.append({"dim": name, "score": round(score), "impact": impact,
@@ -1158,7 +1402,7 @@ def build_action_plan(corpus, result):
                       "detail": result["detail"][name]})
     cards.sort(key=lambda c: c["impact"], reverse=True)
     # strength callout = highest shrunk score
-    strength = max(WEIGHTS, key=lambda n: result["shrunk"][n])
+    strength = max(dims, key=lambda n: result["shrunk"][n])
     return cards, strength
 
 
@@ -1167,7 +1411,7 @@ def _shortest_action_prompt(corpus):
     return min(cands, key=len) if cands else None
 
 
-def build_evidence(corpus, result, cards, archive_info=None):
+def build_evidence(corpus, result, cards, archive_info=None, source=None, capabilities=None):
     """Serialize a de-contaminated EVIDENCE bundle for the two-model analysis pipeline
     (Sonnet 4.6 explores it; Opus 4.8 analyzes it against the bundled AI-fluency
     framework). It contains your real prompts/behavior with home paths scrubbed, and is
@@ -1216,6 +1460,11 @@ def build_evidence(corpus, result, cards, archive_info=None):
     a = result["archetype"]
     return {
         "schema": "claude-insight-evidence/1",
+        # Additive multi-source fields (schema stays /1 for backward compatibility):
+        "source": source or "claude-code",
+        "capabilities": capabilities or {"prompts": True, "edits": True, "verify": True,
+                                         "reads": True, "delegation": True},
+        "not_measurable": result.get("na_dims", []),
         "meta": {
             "sessions": corpus.files, "projects": len(corpus.projects),
             "real_prompts": len(prompts), "user_records": corpus.user_records,
@@ -1244,6 +1493,7 @@ def build_evidence(corpus, result, cards, archive_info=None):
             "weak_examples": {c["dim"]: clean_ex(c["weak"]) for c in cards},
             "tool_usage": dict(corpus.tool_usage),
             "delegation_events": corpus.delegation_events,
+            "signals": dict(corpus.signals),
         },
     }
 
@@ -1337,7 +1587,7 @@ def _project_label(name):
     return s
 
 
-def terminal_summary(corpus, result):
+def terminal_summary(corpus, result, source=None):
     a = result["archetype"]
     lines = [
         "",
@@ -1345,8 +1595,13 @@ def terminal_summary(corpus, result):
         f"  Archetype: {a['label']}",
         f"  Based on {len(corpus.real_prompts)} real prompts across {len(corpus.projects)} projects, "
         f"{corpus.files} sessions ({corpus.total_bytes/1e6:.1f} MB).",
-        "",
     ]
+    na = result.get("na_dims") or []
+    if na:
+        names = ", ".join(disp(n) for n in na)
+        lines.append(f"  Note: {names} not measurable from {source or 'this source'}; "
+                     f"the score covers the remaining dimensions.")
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -1425,7 +1680,8 @@ def build_assessment(corpus, result, cards):
     return (f'<p class="assess">{p1}</p><p class="assess">{p2}</p><p class="assess">{p3}</p>')
 
 
-def build_html(corpus, result, cards, strength, archive_info=None, analysis=None, analysis_note=None):
+def build_html(corpus, result, cards, strength, archive_info=None, analysis=None, analysis_note=None,
+               source=None):
     a = result["archetype"]
     d = result["dist"]
     analysis_section = _analysis_section_html(analysis)
@@ -1468,10 +1724,27 @@ def build_html(corpus, result, cards, strength, archive_info=None, analysis=None
             return f"{det.get('distinct', 0)} distinct tools, evenness {det.get('evenness', 0.0):.2f}, {det.get('delegation_events', 0)} delegations"
         return ""
 
-    # dimension bars
+    # dimension bars — masked (not-measurable) dimensions render last, without a score
     dim_html = ""
-    order = sorted(WEIGHTS, key=lambda n: result["shrunk"][n], reverse=True)
-    for name in order:
+    na_set = set(result.get("na_dims") or [])
+    src_label = source or "this source"
+    if na_set:
+        names = ", ".join(disp(n) for n in WEIGHTS if n in na_set)
+        verb = "is" if len(na_set) == 1 else "are"
+        dim_html += (f'<div class="honesty" style="margin-bottom:14px"><b>{_esc(names)}</b> {verb} not '
+                     f'observable in {_esc(src_label)} logs, so the overall score is re-weighted over '
+                     f'the measurable dimensions — an unobservable habit is never guessed or scored as 0.</div>')
+    order = sorted((n for n in WEIGHTS if n not in na_set),
+                   key=lambda n: result["shrunk"][n], reverse=True)
+    for name in list(order) + [n for n in WEIGHTS if n in na_set]:
+        if name in na_set:
+            dim_html += f"""
+      <div class="dim">
+        <div class="top"><span class="name">{_esc(disp(name))} <span class="tag ld">not measurable</span></span><span class="sval">—</span></div>
+        <p class="def">{_esc(DIM_BLURB[name])}</p>
+        <p class="rate">not observable in {_esc(src_label)} logs · excluded from the score (weights renormalized)</p>
+      </div>"""
+            continue
         sc = round(result["shrunk"][name])
         raw_sc = round(result["raw"][name])
         c = result["conf"][name]
@@ -1947,14 +2220,15 @@ def _run_all_sources(args):
         corpus = parse(files, adapter)
         if not corpus.real_prompts:
             continue
-        result = analyze(corpus)
+        result = analyze(corpus, adapter.capabilities)
         cards, strength = build_action_plan(corpus, result)
         if args.evidence:
             if args.evidence == "-":
                 print("  Note: --source all writes one evidence bundle per source; pass a file "
                       "path (not '-') to receive them.", file=sys.stderr)
             else:
-                bundle = build_evidence(corpus, result, cards, archive_info)
+                bundle = build_evidence(corpus, result, cards, archive_info,
+                                        source=adapter.name, capabilities=adapter.capabilities)
                 ep = os.path.abspath(_source_out_path(args.evidence, adapter.name))
                 os.makedirs(os.path.dirname(ep) or ".", exist_ok=True)
                 with open(ep, "w", encoding="utf-8") as f:
@@ -1963,12 +2237,14 @@ def _run_all_sources(args):
                     print(f"  Evidence ({adapter.name}): {ep}", file=sys.stderr)
         out_path = os.path.abspath(_source_out_path(args.out, adapter.name))
         if not args.json:
-            html_doc = build_html(corpus, result, cards, strength, archive_info)
+            html_doc = build_html(corpus, result, cards, strength, archive_info,
+                                  source=adapter.name)
             os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
             with open(out_path, "w", encoding="utf-8") as f:
                 f.write(html_doc)
         ran.append({"source": adapter.name, "overall": result["overall"], "band": result["band"],
                     "archetype": result["archetype"]["label"],
+                    "not_measurable": result["na_dims"],
                     "real_prompts": len(corpus.real_prompts), "report": out_path})
     if not ran:
         print("No coding-agent transcripts found for any source on this machine.", file=sys.stderr)
@@ -2044,11 +2320,12 @@ def main(argv=None):
         print("Found transcripts but no real human-typed prompts to analyze.", file=sys.stderr)
         return 1
 
-    result = analyze(corpus)
+    result = analyze(corpus, adapter.capabilities)
     cards, strength = build_action_plan(corpus, result)
 
     if args.evidence:
-        bundle = build_evidence(corpus, result, cards, archive_info)
+        bundle = build_evidence(corpus, result, cards, archive_info,
+                                source=adapter.name, capabilities=adapter.capabilities)
         text = json.dumps(bundle, indent=2)
         if args.evidence == "-":
             print(text)
@@ -2112,6 +2389,7 @@ def main(argv=None):
     if args.json:
         payload = {
             "source": adapter.name,
+            "not_measurable": result["na_dims"],
             "overall": result["overall"], "overall_raw": result["overall_raw"],
             "band": result["band"], "archetype": result["archetype"]["label"],
             "dimensions_raw": result["raw"], "dimensions_adjusted": result["shrunk"],
@@ -2129,14 +2407,15 @@ def main(argv=None):
         return 0
 
     # Render fully before touching the file, so a render error can't leave a 0-byte report.
-    html_doc = build_html(corpus, result, cards, strength, archive_info, analysis, analysis_note)
+    html_doc = build_html(corpus, result, cards, strength, archive_info, analysis, analysis_note,
+                          source=adapter.name)
     out_path = os.path.abspath(args.out)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html_doc)
 
     if not args.quiet:
-        print(terminal_summary(corpus, result))
+        print(terminal_summary(corpus, result, adapter.name))
         if archive_info and archive_info["enabled"]:
             print(f"  Archive: {archive_info['merged_sessions']} sessions preserved at "
                   f"{archive_info['dir']} ({archive_info['new']} new, {archive_info['updated']} updated this run).")

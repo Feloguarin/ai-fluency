@@ -767,6 +767,118 @@ class TestClaudeDesktopAdapter(unittest.TestCase):
             self.assertEqual(payload["data_ingested"]["real_prompts"], 1)
 
 
+def codex_rec(typ, ts="2026-04-01T10:00:00.000Z", **payload):
+    return json.dumps({"timestamp": ts, "type": typ, "payload": payload})
+
+
+def write_codex_rollout(root, name="rollout-2026-04-01T10-00-00-abc.jsonl", records=None):
+    os.makedirs(root, exist_ok=True)
+    return write_session(root, name, records or [])
+
+
+class TestCodexAdapter(unittest.TestCase):
+    """The Codex adapter: rollout parsing, tool mapping, and honest Context masking."""
+
+    def _fixture(self, root):
+        return write_codex_rollout(root, records=[
+            codex_rec("session_meta", ts="2026-04-01T10:00:00.000Z",
+                      id="sess-codex-1", cwd="/Users/someone/Work/myrepo",
+                      git={"repository_url": "https://github.com/someone/myrepo.git"}),
+            codex_rec("turn_context", ts="2026-04-01T10:00:01.000Z", cwd="/Users/someone/Work/myrepo"),
+            codex_rec("response_item", ts="2026-04-01T10:00:05.000Z", type="message", role="user",
+                      content=[{"type": "input_text",
+                                "text": "add a --dry-run flag to sync.py, it must not write anything"}]),
+            codex_rec("response_item", ts="2026-04-01T10:00:06.000Z", type="message", role="developer",
+                      content=[{"type": "input_text", "text": "harness instructions blob"}]),
+            codex_rec("response_item", ts="2026-04-01T10:00:20.000Z", type="function_call",
+                      name="exec_command", arguments=json.dumps({"cmd": "python3 -m pytest -q",
+                                                                 "workdir": "/Users/someone/Work/myrepo"})),
+            codex_rec("response_item", ts="2026-04-01T10:00:40.000Z", type="custom_tool_call",
+                      name="apply_patch", input="*** Begin Patch\n*** Add File: /Users/someone/Work/myrepo/flag.py\n+x\n*** Update File: /Users/someone/Work/myrepo/sync.py\n*** End Patch"),
+            codex_rec("response_item", ts="2026-04-01T10:01:00.000Z", type="function_call",
+                      name="update_plan", arguments=json.dumps({"plan": [{"step": "s"}]})),
+            codex_rec("response_item", ts="2026-04-01T10:01:10.000Z", type="web_search_call",
+                      action={"query": "argparse store_true"}),
+            codex_rec("response_item", ts="2026-04-01T10:01:20.000Z", type="reasoning",
+                      encrypted_content="opaque"),
+            codex_rec("event_msg", ts="2026-04-01T10:01:30.000Z", type="token_count"),
+        ])
+
+    def test_parses_rollout_fixture(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._fixture(td)
+            files = insight.CodexAdapter.discover(td)
+            self.assertEqual(len(files), 1)
+            corpus = insight.parse(files, insight.CodexAdapter)
+            self.assertEqual(len(corpus.real_prompts), 1)
+            self.assertIn("--dry-run", corpus.real_prompts[0]["text"])
+            self.assertEqual(corpus.filtered["system"], 1)          # developer prose dropped
+            self.assertEqual(corpus.projects, {"myrepo"})           # from the git repo url
+            self.assertIn("sess-codex-1", corpus.sessions)          # from session_meta.id
+            self.assertEqual(corpus.tool_usage.get("bash"), 1)
+            self.assertEqual(corpus.tool_usage.get("write"), 1)     # Add File
+            self.assertEqual(corpus.tool_usage.get("edit"), 1)      # Update File
+            self.assertEqual(corpus.tool_usage.get("enterplanmode"), 1)
+            self.assertEqual(corpus.tool_usage.get("web_search"), 1)
+            self.assertEqual(corpus.delegation_events, 1)           # update_plan
+            timeline = corpus.sessions["sess-codex-1"]["timeline"]
+            bash = [t for t in timeline if t["kind"] == "tool" and t["name"] == "bash"]
+            self.assertEqual(bash[0]["cmd"], "python3 -m pytest -q")
+            # Absolute home paths in patch targets are scrubbed at the corpus boundary.
+            edits = [t for t in timeline if t["kind"] == "tool" and t["name"] in ("edit", "write")]
+            for t in edits:
+                self.assertFalse(str(t["file"]).startswith("/Users/"), t)
+                self.assertTrue(str(t["file"]).startswith("~/"), t)
+            # Active time covers the full 90s span of ticks (no gap over the cap).
+            self.assertAlmostEqual(corpus.active_seconds, 90.0, places=3)
+
+    def test_context_is_masked_and_weights_renormalize(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._fixture(td)
+            corpus = insight.parse(insight.CodexAdapter.discover(td), insight.CodexAdapter)
+            result = insight.analyze(corpus, insight.CodexAdapter.capabilities)
+            self.assertEqual(result["na_dims"], ["Context"])
+            self.assertNotIn("Context", result["measurable"])
+            measurable = result["measurable"]
+            wsum = sum(insight.WEIGHTS[n] for n in measurable)
+            expect = round(sum(insight.WEIGHTS[n] * result["shrunk"][n] for n in measurable) / wsum)
+            self.assertEqual(result["overall"], expect)
+            # The action plan never coaches an unmeasured dimension.
+            cards, strength = insight.build_action_plan(corpus, result)
+            self.assertNotIn("Context", [c["dim"] for c in cards])
+            self.assertNotEqual(strength, "Context")
+
+    def test_evidence_and_html_surface_masking_without_leaks(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._fixture(td)
+            corpus = insight.parse(insight.CodexAdapter.discover(td), insight.CodexAdapter)
+            result = insight.analyze(corpus, insight.CodexAdapter.capabilities)
+            cards, strength = insight.build_action_plan(corpus, result)
+            bundle = insight.build_evidence(corpus, result, cards, None,
+                                            source="codex",
+                                            capabilities=insight.CodexAdapter.capabilities)
+            self.assertEqual(bundle["schema"], "claude-insight-evidence/1")   # unchanged
+            self.assertEqual(bundle["source"], "codex")
+            self.assertEqual(bundle["not_measurable"], ["Context"])
+            self.assertFalse(bundle["capabilities"]["reads"])
+            self.assertNotIn("/Users/", json.dumps(bundle))
+            html = insight.build_html(corpus, result, cards, strength, source="codex")
+            self.assertIn("not measurable", html)
+            self.assertIn("codex", html)
+
+    def test_source_flag_end_to_end_json(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._fixture(td)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = insight.main(["--source", "codex", td, "--json", "--no-open"])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buf.getvalue())
+            self.assertEqual(payload["source"], "codex")
+            self.assertEqual(payload["not_measurable"], ["Context"])
+            self.assertEqual(payload["data_ingested"]["real_prompts"], 1)
+
+
 class TestClaudeCodeGolden(unittest.TestCase):
     """Locks the claude-code pipeline's output byte-for-byte (adapter-refactor guard).
 
