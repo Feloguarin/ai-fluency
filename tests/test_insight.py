@@ -1282,5 +1282,284 @@ class TestClaudeCodeGolden(unittest.TestCase):
             self.assertEqual(self.snapshot(corpus, result), golden)
 
 
+class TestReportLearningUXAndFixes(unittest.TestCase):
+    """Learning-first report layout, unified skill map, Your Best Prompts, and bug fixes."""
+
+    def test_learning_first_order_and_single_skill_map(self):
+        with tempfile.TemporaryDirectory() as td:
+            write_session(td, "s.jsonl", [
+                user_text("Refactor `auth.py` so login only accepts POST, because GET leaks tokens, then run pytest tests/test_auth.py"),
+                assistant_tool("Read", file_path="/x/auth.py"),
+                assistant_tool("Edit", file_path="/x/auth.py"),
+                assistant_tool("Bash", command="pytest tests/test_auth.py"),
+                user_text("fix the footer"),
+            ])
+            corpus = insight.parse(insight.discover_files(td))
+            result = insight.analyze(corpus)
+            cards, strength = insight.build_action_plan(corpus, result)
+
+            # Deterministic report: coaching first, best prompts next, ONE skill map, data at bottom.
+            det_html = insight.build_html(corpus, result, cards, strength)
+            self.assertNotIn("var(--card)", det_html)
+            self.assertIn("Start here", det_html)
+            self.assertIn("Your best prompts", det_html)
+            self.assertNotIn("<h3>The five dimensions</h3>", det_html)
+            self.assertEqual(det_html.count("<h3>Your skill map</h3>"), 1)
+            self.assertLess(det_html.index("What to improve"), det_html.index("Your best prompts"))
+            self.assertLess(det_html.index("Your best prompts"), det_html.index("Your skill map"))
+            self.assertLess(det_html.index("Your skill map"), det_html.index("How much data this is based on"))
+
+            # AI report: Opus overall_read replaces build_assessment, ONE 4D skill map (no duplicate deterministic map).
+            analysis = {
+                "overall_read": "COACH-SUMMARY-ONLY: crisp briefs on auth, watch short nudges.",
+                "skill_map": [
+                    {"competency": "Delegation", "level": 3, "level_label": "Proficient",
+                     "summary": "Scopes tasks cleanly.", "evidence": ["auth.py refactor"], "next_move": "use plan mode on multi-file changes"},
+                ],
+                "top_growth": [
+                    {"title": "Anchor quick UI tweaks", "why": "short nudges make the agent guess",
+                     "how": "name the file and check", "example_before": "fix the footer",
+                     "example_after": "Fix the footer alignment in footer.css so links wrap cleanly on mobile."},
+                ],
+                "strengths": ["Pairs file path, rule, and pytest check up front."],
+            }
+            ai_html = insight.build_html(corpus, result, cards, strength, analysis=analysis)
+            self.assertIn("COACH-SUMMARY-ONLY", ai_html)
+            self.assertNotIn("<h3>Professional assessment</h3>", ai_html)
+            self.assertNotIn("<h3>Your skill map</h3>", ai_html)
+            self.assertIn("Skill map — analyzed against the AI Fluency framework", ai_html)
+            self.assertLess(ai_html.index("COACH-SUMMARY-ONLY"), ai_html.index("What to improve"))
+            self.assertLess(ai_html.index("What to improve"), ai_html.index("Skill map — analyzed"))
+            self.assertLess(ai_html.index("Skill map — analyzed"), ai_html.index("How much data this is based on"))
+
+    def test_best_prompts_highlight_reel_and_empty_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            write_session(td, "s.jsonl", [
+                user_text("fix it"),
+                user_text("Refactor /Users/alice/app/auth.py so that login must only accept POST, then run pytest tests/test_auth.py"),
+                assistant_tool("Read", file_path="/Users/alice/app/auth.py"),
+                assistant_tool("Edit", file_path="/Users/alice/app/auth.py"),
+                assistant_tool("Bash", command="pytest tests/test_auth.py"),
+                user_text("no, revert auth.py right now because it broke login"),
+            ])
+            corpus = insight.parse(insight.discover_files(td))
+            best = insight._best_prompts(corpus)
+            self.assertEqual(len(best), 1)
+            self.assertIn("~/app/auth.py", best[0]["text"])
+            self.assertNotIn("/Users/alice", best[0]["text"])
+            self.assertGreaterEqual(len(best[0]["habits"]), 3)
+            self.assertIn("Named target", best[0]["habits"])
+            self.assertIn("Built-in check", best[0]["habits"])
+
+            # Exported in evidence bundle too
+            result = insight.analyze(corpus)
+            cards, strength = insight.build_action_plan(corpus, result)
+            ev = insight.build_evidence(corpus, result, cards)
+            self.assertEqual(len(ev["behavior"]["strong_examples"]), 1)
+
+        # Empty state when prompts are all terse one-liners
+        with tempfile.TemporaryDirectory() as td2:
+            write_session(td2, "s.jsonl", [user_text("fix it"), user_text("do it")])
+            c2 = insight.parse(insight.discover_files(td2))
+            self.assertEqual(insight._best_prompts(c2), [])
+            r2 = insight.analyze(c2)
+            cards2, str2 = insight.build_action_plan(c2, r2)
+            html2 = insight.build_html(c2, r2, cards2, str2)
+            self.assertIn("No multi-anchor prompts stood out yet", html2)
+
+    def test_build_assessment_is_truthful_and_source_aware(self):
+        with tempfile.TemporaryDirectory() as td:
+            long_prompt = (
+                "Update the billing calculator in `src/billing/invoice.ts` so that tax exemptions "
+                "must only apply to verified nonprofit accounts, because enterprise accounts were "
+                "getting zero-rated by mistake. Do not touch the Stripe webhook handler, and run "
+                "`npm test` to confirm all existing invoice tests still pass."
+            )
+            write_session(td, "s.jsonl", [
+                user_text(long_prompt),
+                assistant_tool("Read", file_path="/x/invoice.ts"),
+                assistant_tool("Edit", file_path="/x/invoice.ts"),
+                assistant_tool("Bash", command="npm test"),
+            ])
+            corpus = insight.parse(insight.discover_files(td))
+            result = insight.analyze(corpus)
+            cards, strength = insight.build_action_plan(corpus, result)
+            prose = insight.build_assessment(corpus, result, cards, source="cursor")
+            self.assertIn("Cursor", prose)
+            self.assertNotIn("Claude", prose)
+            self.assertNotIn("fast, terse prompts", prose)
+            self.assertIn("detailed, context-rich prompts", prose)
+            self.assertNotIn("delegation rate stands out", prose)
+            html = insight.build_html(corpus, result, cards, strength, source="cursor")
+            self.assertNotIn("cleanupPeriodDays", html)
+            self.assertNotIn("let Claude pick", html)
+
+    def test_combined_keeps_weak_sources_archive_and_tool_matrix(self):
+        with tempfile.TemporaryDirectory() as td:
+            ccdir = os.path.join(td, "cc", "projA")
+            os.makedirs(ccdir, exist_ok=True)
+            write_session(ccdir, "sess-cc1.jsonl", [
+                user_text("fix the bug", ts="2026-06-01T10:00:00Z"),
+                assistant_tool("Edit", ts="2026-06-01T10:00:40Z", file_path="/tmp/a/auth.py"),
+            ])
+            desktop_root = os.path.join(td, "desktop-root")
+            write_desktop_session(desktop_root, "local_m1", [
+                desktop_rec(type="user", _audit_timestamp="2026-06-03T09:00:10Z",
+                            message={"role": "user", "content": "fix the report"}),
+            ])
+            arch_dir = os.path.join(td, "arch")
+            old_env = os.environ.get("CLAUDE_PROJECTS_DIR")
+            saved = (insight._DESKTOP_ROOT, insight._CODEX_ROOTS,
+                     insight._CURSOR_GLOBAL, insight._CURSOR_WORKSPACES)
+            os.environ["CLAUDE_PROJECTS_DIR"] = os.path.join(td, "cc")
+            insight._DESKTOP_ROOT = desktop_root
+            insight._CODEX_ROOTS = [os.path.join(td, "no-codex")]
+            insight._CURSOR_GLOBAL = os.path.join(td, "no-cursor", "state.vscdb")
+            insight._CURSOR_WORKSPACES = os.path.join(td, "no-cursor-ws")
+            try:
+                out = os.path.join(td, "combined.html")
+                evp = os.path.join(td, "ev.json")
+                rc = insight.main(["--source", "all", "-o", out, "--no-open", "--quiet",
+                                   "--archive", arch_dir, "--evidence", evp])
+                self.assertEqual(rc, 0)
+                with open(evp, encoding="utf-8") as fh:
+                    ev = json.load(fh)
+                # Weak examples carry source tags on combined runs
+                dir_weak = ev["behavior"]["weak_examples"]["Direction"]
+                self.assertTrue(dir_weak and all(w.get("source") for w in dir_weak))
+                # Archive info preserved on combined runs
+                self.assertIsNotNone(ev["meta"]["archive"])
+                self.assertGreaterEqual(ev["meta"]["archive"]["archived_sessions"], 2)
+                with open(out, encoding="utf-8") as fh:
+                    html = fh.read()
+                self.assertIn("sessions in your archive", html)
+                self.assertIn("How your habits compare across tools", html)
+                self.assertNotIn("var(--card)", html)
+            finally:
+                if old_env is None:
+                    os.environ.pop("CLAUDE_PROJECTS_DIR", None)
+                else:
+                    os.environ["CLAUDE_PROJECTS_DIR"] = old_env
+                (insight._DESKTOP_ROOT, insight._CODEX_ROOTS,
+                 insight._CURSOR_GLOBAL, insight._CURSOR_WORKSPACES) = saved
+
+    def test_cross_platform_discovery_and_methodology_note(self):
+        # Default roots include Linux ~/.config paths alongside macOS; overridden roots stay isolated.
+        self.assertTrue(any(".config/Claude" in r for r in insight._desktop_roots()))
+        self.assertTrue(any(".config/Cursor" in p for p in insight._cursor_global_paths()))
+        self.assertTrue(any(".config/Cursor" in d for d in insight._cursor_workspace_dirs()))
+        saved = insight._DESKTOP_ROOT
+        try:
+            insight._DESKTOP_ROOT = "/tmp/isolated-desktop-test"
+            self.assertEqual(insight._desktop_roots(), ["/tmp/isolated-desktop-test"])
+        finally:
+            insight._DESKTOP_ROOT = saved
+
+        # When Iteration reaches full confidence (>= 12 prompts), methodology must not say it's low data.
+        with tempfile.TemporaryDirectory() as td:
+            recs = [user_text(f"update module_{i}.py to handle case {i} only") for i in range(15)]
+            write_session(td, "s.jsonl", recs)
+            corpus = insight.parse(insight.discover_files(td))
+            result = insight.analyze(corpus)
+            cards, strength = insight.build_action_plan(corpus, result)
+            html = insight.build_html(corpus, result, cards, strength)
+            self.assertNotIn("Iteration had only", html)
+            self.assertIn("Briefing", html)
+
+    def test_data_viz_charts_and_tool_case_folding(self):
+        with tempfile.TemporaryDirectory() as td:
+            write_session(td, "s.jsonl", [
+                user_text("Refactor `auth.py` so login must only accept POST, then run pytest"),
+                assistant_tool("Bash", command="pytest"),
+                assistant_tool("bash", command="pytest -q"),
+                assistant_tool("Edit", file_path="/x/auth.py"),
+                assistant_tool("edit", file_path="/x/auth.py"),
+            ])
+            corpus = insight.parse(insight.discover_files(td))
+            result = insight.analyze(corpus, insight.CodexAdapter.capabilities)
+            cards, strength = insight.build_action_plan(corpus, result)
+            html = insight.build_html(corpus, result, cards, strength, source="codex")
+            self.assertIn('class="gauge-svg"', html)
+            self.assertIn('class="radar-svg"', html)
+            self.assertIn("Context —", html)
+            # Case-folded Top Tools merges Bash + bash -> 2 and Edit + edit -> 2
+            self.assertIn("<span>Bash</span><b><i style=\"width:100%\"></i></b><em>2</em>", html)
+            self.assertNotIn("<span>bash</span>", html)
+            self.assertIn("<span>Edit</span>", html)
+            self.assertNotIn("<span>edit</span>", html)
+
+    def test_high_signal_highlights_patterns_dojo_and_rules(self):
+        import re as _re
+        # Inline highlighter wraps Target/Rule/Why/Check without changing plain-text content
+        raw = "Refactor `auth.py` so login must only accept POST because GET leaks tokens, then run `pytest -q`."
+        marked = insight._highlight_prompt_html(raw)
+        self.assertIn('class="hl-t"', marked)
+        self.assertIn('class="hl-r"', marked)
+        self.assertIn('class="hl-w"', marked)
+        self.assertIn('class="hl-v"', marked)
+        stripped = insight.html.unescape(_re.sub(r"<[^>]+>", "", marked))
+        self.assertEqual(stripped, raw)
+
+        # Multi-day + multi-project + retry-spiral + custom test command detection
+        with tempfile.TemporaryDirectory() as td:
+            pa = os.path.join(td, "projA")
+            pb = os.path.join(td, "projB")
+            os.makedirs(pa, exist_ok=True)
+            os.makedirs(pb, exist_ok=True)
+            write_session(pa, "s1.jsonl", [
+                user_text("update `api.py` so only admin can call export, then run pytest -q", ts="2026-06-01T10:00:00Z"),
+                assistant_tool("Read", ts="2026-06-01T10:00:20Z", file_path="/x/api.py"),
+                assistant_tool("Edit", ts="2026-06-01T10:00:40Z", file_path="/x/api.py"),
+                assistant_tool("Bash", ts="2026-06-01T10:01:00Z", command="pytest -q"),
+            ])
+            write_session(pa, "s2.jsonl", [
+                user_text("fix it", ts="2026-06-08T10:00:00Z"),
+                assistant_tool("Edit", ts="2026-06-08T10:00:20Z", file_path="/x/api.py"),
+                user_text("no that's wrong", ts="2026-06-08T10:00:40Z"),
+                assistant_tool("Edit", ts="2026-06-08T10:01:00Z", file_path="/x/api.py"),
+                user_text("still broken", ts="2026-06-08T10:01:20Z"),
+            ])
+            write_session(pb, "s3.jsonl", [
+                user_text("add health route to `srv.py` and run pytest -q", ts="2026-06-15T10:00:00Z"),
+                assistant_tool("Read", ts="2026-06-15T10:00:20Z", file_path="/x/srv.py"),
+                assistant_tool("Edit", ts="2026-06-15T10:00:40Z", file_path="/x/srv.py"),
+                assistant_tool("Bash", ts="2026-06-15T10:01:00Z", command="pytest -q"),
+            ])
+            corpus = insight.parse(insight.discover_files(td))
+            result = insight.analyze(corpus)
+            cards, strength = insight.build_action_plan(corpus, result)
+            html = insight.build_html(corpus, result, cards, strength, source="cursor")
+
+            self.assertIn("Patterns across your sessions", html)
+            self.assertIn("Score trajectory", html)
+            self.assertIn("Score by project", html)
+            self.assertIn("First-try vs. retry spiral", html)
+            self.assertIn("Longest retry chain: <b>2</b>", html)
+            self.assertIn("10-second rewrite dojo", html)
+            self.assertIn("Project guardrail", html)
+            self.assertIn("Run `pytest -q` after edits", html)
+            self.assertIn('<b class="rf-name">.cursorrules</b>', html)
+
+    def test_run_history_persistence_skips_jsonl(self):
+        with tempfile.TemporaryDirectory() as td:
+            live = os.path.join(td, "live", "proj")
+            arch = os.path.join(td, "arch")
+            os.makedirs(live, exist_ok=True)
+            write_session(live, "s1.jsonl", [user_text("update `app.py` to log errors only, then run pytest")])
+            out = os.path.join(td, "r.html")
+            old_env = os.environ.get("CLAUDE_PROJECTS_DIR")
+            os.environ["CLAUDE_PROJECTS_DIR"] = os.path.join(td, "live")
+            try:
+                rc = insight.main(["--source", "claude-code", "--archive", arch, "-o", out, "--no-open"])
+                self.assertEqual(rc, 0)
+            finally:
+                if old_env is None:
+                    os.environ.pop("CLAUDE_PROJECTS_DIR", None)
+                else:
+                    os.environ["CLAUDE_PROJECTS_DIR"] = old_env
+            self.assertTrue(os.path.exists(os.path.join(arch, "insight_history.json")))
+            self.assertEqual(glob.glob(os.path.join(arch, "*.jsonl")), [])
+
+
 if __name__ == "__main__":
     unittest.main()

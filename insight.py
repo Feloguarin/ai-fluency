@@ -94,6 +94,12 @@ VERIFY_RE = re.compile(
 )
 # Clean-teardown of a live system (small bonus, folded into Verification).
 TEARDOWN_RE = re.compile(r"(lsof -ti.*kill|pkill|kill -9|docker compose down|docker-compose down)", re.I)
+# Verification cues inside a human prompt (used to highlight high-craft prompts).
+_VERIFY_PROMPT_RE = re.compile(
+    r"\b(run (the )?(tests?|suite|build|lint|checks?)|verify|confirm|make sure .* pass|"
+    r"check (it|that)|show me the output|paste the output|before (you )?finish)\b",
+    re.I,
+)
 
 # Direction (prompt-quality) cues.
 ARTIFACT_RE = re.compile(
@@ -120,7 +126,7 @@ ACTION_VERB = re.compile(
 CORRECTION_CUE = re.compile(
     r"\b(no|nope|wrong|not quite|that's not|thats not|actually|instead|revert|undo|redo|try again|"
     r"too (aggressive|agressive|much|many|slow|fast|big|small)|still (broken|failing|wrong|not)|"
-    r"doesn't work|does not work|not working|unteligible|unteliggeble)\b", re.I
+    r"doesn't work|does not work|not working)\b", re.I
 )
 PRAISE_CUE = re.compile(r"\b(great|perfect|love it|nice|awesome|excellent|beautiful|exactly)\b", re.I)
 CORRECTION_RATE_CEILING = 0.35   # a "high" correction rate; lower is better
@@ -351,6 +357,8 @@ class Corpus:
         self.signals = Counter()        # source-specific extras (e.g. permission_denials)
         # Per-session ordered timelines of {"kind": "prompt"|"tool", ...}
         self.sessions = {}              # session_id -> {"project","timeline":[...]}
+        self.session_ts = {}            # session_id -> earliest parsed timestamp
+        self.session_caps = {}          # session_id -> optional capabilities dict (combined runs)
 
 
 # Agent-to-agent transcripts (Claude Code subagents, Workflow runs) live under a
@@ -590,8 +598,21 @@ class ClaudeCodeAdapter:
 
 # --- Claude Desktop (agent mode / "Cowork") ------------------------------------------------ #
 
-_DESKTOP_ROOT = "~/Library/Application Support/Claude/local-agent-mode-sessions"
+_DEFAULT_DESKTOP_ROOT = "~/Library/Application Support/Claude/local-agent-mode-sessions"
+_DESKTOP_ROOT = _DEFAULT_DESKTOP_ROOT
 _UPLOADED_RE = re.compile(r"<uploaded_files>.*?</uploaded_files>", re.S)
+
+
+def _desktop_roots():
+    """Candidate Cowork session directories across macOS, Linux, and Windows.
+    When _DESKTOP_ROOT is overridden (e.g. in tests), only inspect that explicit path."""
+    roots = [_DESKTOP_ROOT]
+    if _DESKTOP_ROOT == _DEFAULT_DESKTOP_ROOT:
+        roots.append("~/.config/Claude/local-agent-mode-sessions")
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            roots.append(os.path.join(appdata, "Claude", "local-agent-mode-sessions"))
+    return [os.path.expanduser(r) for r in roots]
 
 
 def _strip_uploaded_files(text):
@@ -617,7 +638,7 @@ class ClaudeDesktopAdapter:
 
     @staticmethod
     def detect():
-        return os.path.isdir(os.path.expanduser(_DESKTOP_ROOT))
+        return any(os.path.isdir(r) for r in _desktop_roots())
 
     @staticmethod
     def owns_file(path):
@@ -632,10 +653,11 @@ class ClaudeDesktopAdapter:
             if os.path.isdir(p):
                 return sorted(glob.glob(os.path.join(p, "**", "audit.jsonl"), recursive=True))
             return []
-        root = os.path.expanduser(_DESKTOP_ROOT)
-        if not os.path.isdir(root):
-            return []
-        return sorted(glob.glob(os.path.join(root, "**", "audit.jsonl"), recursive=True))
+        files = []
+        for root in _desktop_roots():
+            if os.path.isdir(root):
+                files.extend(glob.glob(os.path.join(root, "**", "audit.jsonl"), recursive=True))
+        return sorted(set(files))
 
     @staticmethod
     def _project_of(path):
@@ -655,7 +677,7 @@ class ClaudeDesktopAdapter:
                         continue
                     if e.get("type") == "system" and isinstance(e.get("cwd"), str) and e.get("cwd"):
                         cwd = e["cwd"].rstrip("/\\")
-                        in_sandbox = os.path.expanduser(_DESKTOP_ROOT) in cwd
+                        in_sandbox = any(r in cwd for r in _desktop_roots())
                         base = os.path.basename(cwd)
                         if in_sandbox or not base:
                             return "claude-desktop"
@@ -948,10 +970,33 @@ class CodexAdapter:
 
 # --- Cursor IDE ----------------------------------------------------------------------------- #
 
-_CURSOR_GLOBAL = "~/Library/Application Support/Cursor/User/globalStorage/state.vscdb"
-_CURSOR_WORKSPACES = "~/Library/Application Support/Cursor/User/workspaceStorage"
-# Linux:   ~/.config/Cursor/User/{globalStorage,workspaceStorage}/...
-# Windows: %APPDATA%\Cursor\User\{globalStorage,workspaceStorage}\...
+_DEFAULT_CURSOR_GLOBAL = "~/Library/Application Support/Cursor/User/globalStorage/state.vscdb"
+_DEFAULT_CURSOR_WORKSPACES = "~/Library/Application Support/Cursor/User/workspaceStorage"
+_CURSOR_GLOBAL = _DEFAULT_CURSOR_GLOBAL
+_CURSOR_WORKSPACES = _DEFAULT_CURSOR_WORKSPACES
+
+
+def _cursor_global_paths():
+    """Candidate Cursor globalStorage DBs across macOS, Linux, and Windows.
+    When _CURSOR_GLOBAL is overridden (e.g. in tests), only inspect that explicit path."""
+    paths = [_CURSOR_GLOBAL]
+    if _CURSOR_GLOBAL == _DEFAULT_CURSOR_GLOBAL:
+        paths.append("~/.config/Cursor/User/globalStorage/state.vscdb")
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            paths.append(os.path.join(appdata, "Cursor", "User", "globalStorage", "state.vscdb"))
+    return [os.path.expanduser(p) for p in paths]
+
+
+def _cursor_workspace_dirs():
+    """Candidate Cursor workspaceStorage roots across macOS, Linux, and Windows."""
+    dirs = [_CURSOR_WORKSPACES]
+    if _CURSOR_WORKSPACES == _DEFAULT_CURSOR_WORKSPACES:
+        dirs.append("~/.config/Cursor/User/workspaceStorage")
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            dirs.append(os.path.join(appdata, "Cursor", "User", "workspaceStorage"))
+    return [os.path.expanduser(d) for d in dirs]
 
 
 class CursorAdapter:
@@ -980,10 +1025,9 @@ class CursorAdapter:
 
     @staticmethod
     def detect():
-        if os.path.exists(os.path.expanduser(_CURSOR_GLOBAL)):
+        if any(os.path.exists(g) for g in _cursor_global_paths()):
             return True
-        ws = os.path.expanduser(_CURSOR_WORKSPACES)
-        return bool(glob.glob(os.path.join(ws, "*", "state.vscdb")))
+        return any(glob.glob(os.path.join(ws, "*", "state.vscdb")) for ws in _cursor_workspace_dirs())
 
     @staticmethod
     def discover(explicit):
@@ -995,11 +1039,13 @@ class CursorAdapter:
                 return sorted(glob.glob(os.path.join(p, "**", "state.vscdb"), recursive=True))
             return []
         out = []
-        g = os.path.expanduser(_CURSOR_GLOBAL)
-        if os.path.exists(g):
-            out.append(g)
-        out.extend(sorted(glob.glob(os.path.join(os.path.expanduser(_CURSOR_WORKSPACES),
-                                                 "*", "state.vscdb"))))
+        for g in _cursor_global_paths():
+            if os.path.exists(g) and g not in out:
+                out.append(g)
+        ws_dbs = []
+        for ws in _cursor_workspace_dirs():
+            ws_dbs.extend(glob.glob(os.path.join(ws, "*", "state.vscdb")))
+        out.extend(sorted(set(ws_dbs)))
         return out
 
     @staticmethod
@@ -1255,8 +1301,12 @@ def parse(files, adapter=None):
                 min((ts_in[i + 1] - ts_in[i]).total_seconds(), GAP_CAP_SECONDS)
                 for i in range(len(ts_in) - 1)
             )
+        elif ts_in:
+            ts_in.sort()
         if cur["timeline"]:
             c.sessions[cur["session_id"]] = {"project": cur["project"], "timeline": cur["timeline"]}
+            if ts_in:
+                c.session_ts[cur["session_id"]] = ts_in[0]
 
     for path in files:
         try:
@@ -1397,6 +1447,7 @@ def _iter_sessions(corpus):
 def _find_corrections(corpus):
     """Correction turns: short rejections that follow an assistant action, praise-guarded."""
     out = []
+    sess_src = getattr(corpus, "session_source", None) or {}
     for sid, project, timeline in _iter_sessions(corpus):
         saw_tool = False
         for ev in timeline:
@@ -1410,7 +1461,11 @@ def _find_corrections(corpus):
                     re.search(r"\d", t) or ARTIFACT_RE.search(t) or len(t.split()) >= 8
                     or INTENT_CUE.search(t)
                 )
-                out.append({"session": sid, "project": project, "text": t, "high_info": high_info})
+                item = {"session": sid, "project": project, "text": t, "high_info": high_info}
+                src = (ev.get("rec") or {}).get("source") or sess_src.get(sid)
+                if src:
+                    item["source"] = src
+                out.append(item)
             saw_tool = False  # reset: correction must directly follow an action turn
     return out
 
@@ -1437,6 +1492,7 @@ def score_context(corpus):
     total_edits = 0
     grounded = 0
     blind_examples = []
+    sess_src = getattr(corpus, "session_source", None) or {}
     for sid, project, timeline in _iter_sessions(corpus):
         read_paths = set()
         edited_paths = set()
@@ -1457,7 +1513,10 @@ def score_context(corpus):
                 if fpath in read_paths or fpath in written_paths or is_new_write:
                     grounded += 1
                 else:
-                    blind_examples.append({"session": sid, "project": project, "file": fpath})
+                    item = {"session": sid, "project": project, "file": fpath}
+                    if sid in sess_src:
+                        item["source"] = sess_src[sid]
+                    blind_examples.append(item)
                 if name == "write":
                     written_paths.add(fpath)
                 edited_paths.add(fpath)
@@ -1473,6 +1532,7 @@ def score_verification(corpus):
     verified = 0
     teardown_bonus = 0
     unverified_examples = []
+    sess_src = getattr(corpus, "session_source", None) or {}
     for sid, project, timeline in _iter_sessions(corpus):
         open_ep = False
         ep_files = []
@@ -1504,8 +1564,11 @@ def score_verification(corpus):
                 verified += 1
                 open_ep = False
         if open_ep:
-            unverified_examples.append({"session": sid, "project": project,
-                                        "files": ", ".join(sorted(set(ep_files))[:3]) or "files"})
+            item = {"session": sid, "project": project,
+                    "files": ", ".join(sorted(set(ep_files))[:3]) or "files"}
+            if sid in sess_src:
+                item["source"] = sess_src[sid]
+            unverified_examples.append(item)
     if episodes == 0:
         return 50.0, {"n": 0, "episodes": 0, "verified": 0, "rate": None}, []
     rate = verified / episodes
@@ -1695,6 +1758,10 @@ def merge_corpora(entries):
                     timeline.append(ev)
             m.sessions[key] = {"project": sess["project"], "timeline": timeline}
             m.session_source[key] = source
+            if sid in getattr(c, "session_ts", {}):
+                m.session_ts[key] = c.session_ts[sid]
+            if sid in getattr(c, "session_caps", {}):
+                m.session_caps[key] = c.session_caps[sid]
         # prompts from sessions whose timeline never made it into c.sessions don't exist:
         # parse() only records prompts through timelines, so the rebuild above is complete.
     return m
@@ -1710,6 +1777,10 @@ def analyze_combined(entries):
     "overall": int, "band": str} (per-source overall/band ride along for the report's
     source-mix panel). Returns (merged_corpus, result) shaped exactly like analyze()'s."""
     full = merge_corpora([(e["source"], e["corpus"]) for e in entries])
+    caps_by_source = {e["source"]: e["caps"] for e in entries}
+    for sid, src in getattr(full, "session_source", {}).items():
+        if src in caps_by_source:
+            full.session_caps[sid] = caps_by_source[src]
     subs = {}   # frozenset of source names -> merged sub-corpus (cache)
 
     def corpus_for(dim):
@@ -1761,6 +1832,18 @@ def analyze_combined(entries):
             "under_80_pct": round(100 * sum(1 for L in lens if L < 80) / len(lens)),
         }
 
+    sources_out = []
+    for e in entries:
+        srow = {"source": e["source"], "overall": e["overall"], "band": e["band"],
+                "real_prompts": len(e["corpus"].real_prompts),
+                "sessions": e["corpus"].files,
+                "active_hours": round(e["corpus"].active_seconds / 3600, 1),
+                "not_measurable": [n for n in WEIGHTS
+                                   if n not in _measurable_dims(e["caps"])]}
+        if isinstance(e.get("dims"), dict):
+            srow["dims"] = e["dims"]
+        sources_out.append(srow)
+
     result = {
         "raw": raw, "shrunk": shrunk, "conf": conf, "detail": detail, "evidence": evidence,
         "overall_raw": overall_raw, "overall": overall, "band": band, "band_meaning": band_meaning,
@@ -1769,13 +1852,7 @@ def analyze_combined(entries):
         # Combined-mode extras (absent from single-source results):
         "combined": True,
         "dim_sources": contributors,
-        "sources": [{"source": e["source"], "overall": e["overall"], "band": e["band"],
-                     "real_prompts": len(e["corpus"].real_prompts),
-                     "sessions": e["corpus"].files,
-                     "active_hours": round(e["corpus"].active_seconds / 3600, 1),
-                     "not_measurable": [n for n in WEIGHTS
-                                        if n not in _measurable_dims(e["caps"])]}
-                    for e in entries],
+        "sources": sources_out,
     }
     return full, result
 
@@ -1801,6 +1878,89 @@ def build_action_plan(corpus, result):
 def _shortest_action_prompt(corpus):
     cands = [p["text"] for p in corpus.real_prompts if _is_action_prompt(p["text"]) and len(p["text"]) < 40]
     return min(cands, key=len) if cands else None
+
+
+def _best_prompts(corpus, limit=3):
+    """Pick up to `limit` real prompts that already demonstrate strong AI-fluency habits
+    (at least 2 concrete anchors: named file/symbol, explicit rule, stated why, or built-in
+    verification check). Deterministic, prefers prompts that landed cleanly without an
+    immediate follow-up correction and spans distinct projects/tools."""
+    followed_by_corr = set()
+    for sid, _, timeline in _iter_sessions(corpus):
+        last_prompt_key = None
+        saw_tool = False
+        for ev in timeline:
+            if ev["kind"] == "tool":
+                saw_tool = True
+                continue
+            t = ev["text"]
+            head = t[:160]
+            if saw_tool and CORRECTION_CUE.search(head) and not PRAISE_CUE.search(head) and last_prompt_key:
+                followed_by_corr.add(last_prompt_key)
+            rec = ev.get("rec") or {}
+            last_prompt_key = (rec.get("session", sid), rec.get("idx"))
+            saw_tool = False
+
+    scored = []
+    for p in corpus.real_prompts:
+        t = p["text"].strip()
+        if len(t) < 40 or len(t) > 700:
+            continue
+        head = t[:80]
+        if CORRECTION_CUE.search(head) and not PRAISE_CUE.search(head):
+            continue
+        habits = []
+        if ARTIFACT_RE.search(t):
+            habits.append("Named target")
+        if CONSTRAINT_CUE.search(t) and ACTION_VERB.search(t):
+            habits.append("Clear rule")
+        if INTENT_CUE.search(t):
+            habits.append("Stated why")
+        if _VERIFY_PROMPT_RE.search(t) or VERIFY_RE.search(t):
+            habits.append("Built-in check")
+        if len(habits) < 2:
+            continue
+        clean_turn = (p["session"], p["idx"]) not in followed_by_corr
+        sweet_len = 70 <= len(t) <= 320
+        rank = (len(habits), int(clean_turn), int(sweet_len), min(len(t), 350))
+        scored.append((rank, p, habits))
+
+    scored.sort(key=lambda x: (x[0], x[1]["session"], x[1]["idx"]), reverse=True)
+    picked, seen_text, seen_proj = [], set(), set()
+
+    def _emit(p, habits):
+        item = {
+            "text": _scrub_paths(p["text"].strip()[:420]),
+            "project": _project_label(p["project"]),
+            "habits": habits,
+        }
+        if p.get("source"):
+            item["source"] = p["source"]
+        return item
+
+    # First pass: maximize diversity across projects/tools.
+    for _, p, habits in scored:
+        if len(picked) >= limit:
+            break
+        key_text = p["text"].strip().lower()
+        proj_key = (p.get("source") or "", p["project"])
+        if key_text in seen_text or proj_key in seen_proj:
+            continue
+        seen_text.add(key_text)
+        seen_proj.add(proj_key)
+        picked.append(_emit(p, habits))
+
+    # Second pass: fill remaining slots if all best prompts came from one project.
+    for _, p, habits in scored:
+        if len(picked) >= limit:
+            break
+        key_text = p["text"].strip().lower()
+        if key_text in seen_text:
+            continue
+        seen_text.add(key_text)
+        picked.append(_emit(p, habits))
+
+    return picked
 
 
 def build_evidence(corpus, result, cards, archive_info=None, source=None, capabilities=None):
@@ -1847,6 +2007,8 @@ def build_evidence(corpus, result, cards, archive_info=None, source=None, capabi
                 c["files"] = str(e["files"])
             if e.get("project"):
                 c["project"] = _project_label(e["project"])
+            if e.get("source"):
+                c["source"] = str(e["source"])
             if c:
                 out.append(c)
         return out
@@ -1889,6 +2051,7 @@ def build_evidence(corpus, result, cards, archive_info=None, source=None, capabi
                       "blended": a.get("blended")},
         "behavior": {
             "sample_prompts": sample,
+            "strong_examples": _best_prompts(corpus),
             "weak_examples": {c["dim"]: clean_ex(c["weak"]) for c in cards},
             "tool_usage": dict(corpus.tool_usage),
             "delegation_events": corpus.delegation_events,
@@ -1897,15 +2060,278 @@ def build_evidence(corpus, result, cards, archive_info=None, source=None, capabi
     }
 
 
-def _analysis_section_html(analysis):
-    """Render the AI-authored skill map (produced by the Opus analysis stage,
-    grounded in reference/ai-fluency-framework.md). Falls back to nothing if absent."""
+def _dots_html(level):
+    """Render a 1-5 visual segmented level meter."""
+    try:
+        lvl = max(0, min(5, int(level)))
+    except (TypeError, ValueError):
+        lvl = 0
+    return '<span class="segs" aria-label="Level ' + str(lvl) + ' of 5">' + "".join(
+        f'<i class="{"on" if i < lvl else ""}"></i>' for i in range(5)
+    ) + '</span>'
+
+
+def _svg_gauge(score, band, raw, hero_srcline=""):
+    """Precision 240-degree open arc gauge with band boundary ticks (40/55/70/85)."""
+    cx, cy, r = 100.0, 96.0, 72.0
+    a_start, sweep = 150.0, 240.0
+
+    def pt(deg, rad=r):
+        t = math.radians(deg)
+        return cx + rad * math.cos(t), cy + rad * math.sin(t)
+
+    def arc(pct):
+        pct = max(0.0, min(100.0, float(pct)))
+        span = sweep * (pct / 100.0)
+        x0, y0 = pt(a_start)
+        x1, y1 = pt(a_start + span)
+        large = 1 if span > 180.0 else 0
+        return f"M {x0:.1f} {y0:.1f} A {r:.1f} {r:.1f} 0 {large} 1 {x1:.1f} {y1:.1f}"
+
+    ticks = []
+    for bound in (40, 55, 70, 85):
+        deg = a_start + sweep * (bound / 100.0)
+        x0, y0 = pt(deg, r - 6)
+        x1, y1 = pt(deg, r + 6)
+        ticks.append(f'<line x1="{x0:.1f}" y1="{y0:.1f}" x2="{x1:.1f}" y2="{y1:.1f}" stroke="var(--bg)" stroke-width="2"/>')
+
+    next_note = "Top tier"
+    for name, lo, _, _ in BANDS:
+        if score < lo:
+            pts = lo - score
+            next_note = f"{pts} pt{'s' if pts != 1 else ''} to {name}"
+            break
+
+    fill_path = (f'<path d="{arc(max(score, 1))}" fill="none" stroke="var(--accent)" '
+                 f'stroke-width="11" stroke-linecap="round"/>') if score > 0 else ""
+    return (
+        f'<div class="gauge-wrap">'
+        f'<svg viewBox="0 0 200 156" class="gauge-svg" role="img" aria-label="Fluency score {score} out of 100">'
+        f'<path d="{arc(100)}" fill="none" stroke="var(--track)" stroke-width="11" stroke-linecap="round"/>'
+        f'{fill_path}{"".join(ticks)}'
+        f'<text x="100" y="96" text-anchor="middle" class="g-num">{score}</text>'
+        f'<text x="100" y="114" text-anchor="middle" class="g-sub">/ 100</text>'
+        f'<text x="100" y="138" text-anchor="middle" class="g-band">{_esc(band)}</text>'
+        f'</svg>'
+        f'<div class="g-meta"><span>{_esc(next_note)}</span><span>raw {raw} · adj {score}</span></div>'
+        f'{hero_srcline}'
+        f'</div>'
+    )
+
+
+def _svg_radar(result):
+    """5-axis fluency pentagon radar (inline SVG) vs. the 85-pt target ring.
+    Masked (not measurable) axes are omitted from the polygon and marked '—' — never faked as 0."""
+    axes = [("Direction", "Briefing"), ("Verification", "Verify"), ("Context", "Context"),
+            ("Iteration", "Iteration"), ("Toolcraft", "Toolcraft")]
+    na_set = set(result.get("na_dims") or [])
+    cx, cy, R = 160.0, 118.0, 80.0
+    angles = [-90 + i * 72 for i in range(5)]
+
+    def pt(deg, frac):
+        t = math.radians(deg)
+        return cx + R * frac * math.cos(t), cy + R * frac * math.sin(t)
+
+    rings = []
+    for frac in (0.25, 0.50, 0.75, 1.0):
+        pts = " ".join(f"{pt(a, frac)[0]:.1f},{pt(a, frac)[1]:.1f}" for a in angles)
+        rings.append(f'<polygon points="{pts}" fill="none" stroke="var(--line)" stroke-width="1"/>')
+    tgt_pts = " ".join(f"{pt(a, 0.85)[0]:.1f},{pt(a, 0.85)[1]:.1f}" for a in angles)
+    rings.append(f'<polygon points="{tgt_pts}" fill="none" stroke="var(--ok)" stroke-width="1" stroke-dasharray="3 3" opacity="0.55"/>')
+
+    spokes = []
+    for a in angles:
+        x1, y1 = pt(a, 1.0)
+        spokes.append(f'<line x1="{cx:.1f}" y1="{cy:.1f}" x2="{x1:.1f}" y2="{y1:.1f}" stroke="var(--line)" stroke-width="1"/>')
+
+    poly_pts = []
+    dots = []
+    labels = []
+    for i, (key, short_lbl) in enumerate(axes):
+        a = angles[i]
+        lx, ly = pt(a, 1.22)
+        if i == 0:
+            anc, dy = "middle", -3
+        elif i in (1, 2):
+            anc, dy = "start", 4
+        else:
+            anc, dy = "end", 4
+
+        if key in na_set:
+            labels.append(
+                f'<text x="{lx:.1f}" y="{ly + dy:.1f}" text-anchor="{anc}" class="r-lbl na">'
+                f'{short_lbl} —</text>'
+            )
+            continue
+
+        sc = round(result["shrunk"][key])
+        vx, vy = pt(a, max(0.06, sc / 100.0))
+        poly_pts.append(f"{vx:.1f},{vy:.1f}")
+        dot_col = "var(--ok)" if sc >= 75 else ("var(--warn)" if sc < 55 else "var(--accent)")
+        dots.append(f'<circle cx="{vx:.1f}" cy="{vy:.1f}" r="4.5" fill="{dot_col}" stroke="var(--surface)" stroke-width="1.5"/>')
+        labels.append(
+            f'<text x="{lx:.1f}" y="{ly + dy:.1f}" text-anchor="{anc}" class="r-lbl">'
+            f'{short_lbl} <tspan class="r-val">{sc}</tspan></text>'
+        )
+
+    poly = (f'<polygon points="{" ".join(poly_pts)}" fill="var(--accent-soft)" '
+            f'stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>') if len(poly_pts) >= 3 else ""
+
+    return (
+        f'<div class="radar-wrap">'
+        f'<div class="panel-k">Fluency shape <span class="legend-t">--- 85 target</span></div>'
+        f'<svg viewBox="0 0 320 236" class="radar-svg" role="img" aria-label="Five-dimension fluency radar">'
+        f'{"".join(rings)}{"".join(spokes)}{poly}{"".join(dots)}{"".join(labels)}'
+        f'</svg></div>'
+    )
+
+
+def _impact_chart_html(cards):
+    """Visual score-upside bars showing exact overall points available per weak dimension."""
+    gains = [(c["dim"], round(c["impact"], 1), c["score"]) for c in cards if c["impact"] > 0.4]
+    if not gains:
+        return ('<div class="impact-box"><div class="panel-k">Score upside</div>'
+                '<p class="muted-sm">Every measured dimension is at or above the 85-pt mastery target.</p></div>')
+    max_g = max(g for _, g, _ in gains) or 1.0
+    rows = []
+    for dim, pts, sc in gains[:4]:
+        w = max(6, round(100 * pts / max_g))
+        tone = "bad" if sc < 55 else "warn"
+        rows.append(
+            f'<div class="imp-row">'
+            f'<span class="imp-n">{_esc(disp(dim))}</span>'
+            f'<span class="imp-tr"><i class="{tone}" style="width:{w}%"></i></span>'
+            f'<span class="imp-v">+{pts:.1f} pts</span>'
+            f'</div>'
+        )
+    return (
+        '<div class="impact-box">'
+        '<div class="panel-k">Score upside <span class="muted-sm">(pts to 85 target)</span></div>'
+        + "".join(rows) + '</div>'
+    )
+
+
+def _prompt_anatomy_html(result):
+    """4-column visual target-bullet strip for the observable prompt & verification rates."""
+    dd = result["detail"].get("Direction") or {}
+    vd = result["detail"].get("Verification") or {}
+    na_set = set(result.get("na_dims") or [])
+    metrics = [
+        ("Named target", "File, symbol, or path", dd.get("artifact_rate"), 0.45),
+        ("Clear rule", "Constraint or boundary", dd.get("constraint_rate"), 0.45),
+        ("Stated why", "Goal or context", dd.get("intent_rate"), 0.30),
+    ]
+    if "Verification" not in na_set and vd.get("rate") is not None:
+        metrics.append(("Verified edits", "Test, build, or check", vd.get("rate"), 0.60))
+    else:
+        cd = result["detail"].get("Iteration") or {}
+        metrics.append(("Specific fixes", "Symptom + rule", cd.get("specificity"), 0.75))
+
+    tiles = []
+    for label, sub, rate, target in metrics:
+        if rate is None:
+            pct, bar_w, hit = "—", 0, False
+        else:
+            p = round(rate * 100)
+            pct = f"{p}%"
+            bar_w = min(100, p)
+            hit = rate >= target
+        tgt_x = round(target * 100)
+        tone = "ok" if hit else ("warn" if (rate or 0) >= target * 0.5 else "bad")
+        tiles.append(
+            f'<div class="anat">'
+            f'<div class="anat-top"><span class="anat-l">{_esc(label)}</span>'
+            f'<span class="anat-v {tone}">{pct}</span></div>'
+            f'<div class="bullet"><i class="{tone}" style="width:{bar_w}%"></i>'
+            f'<b class="tick" style="left:{tgt_x}%" title="Target {tgt_x}%"></b></div>'
+            f'<div class="anat-s">{_esc(sub)} · target {tgt_x}%</div>'
+            f'</div>'
+        )
+    return '<div class="anat-grid">' + "".join(tiles) + '</div>'
+
+
+def _data_visuals_html(corpus):
+    """Three compact side-by-side data charts: Signal-vs-Noise bar, Prompt Length mix, Top Tools."""
+    # 1. Signal vs Noise stacked bar
+    real_n = len(corpus.real_prompts)
+    total_u = max(1, corpus.user_records)
+    real_pct = round(100 * real_n / total_u)
+    noise_items = corpus.filtered.most_common(4)
+    segs = [f'<i class="seg-real" style="width:{max(real_pct, 2 if real_n else 0)}%" title="Real prompts: {real_n:,}"></i>']
+    legend = [f'<span><b class="sw real"></b><b>{real_n:,}</b> real prompts ({real_pct}%)</span>']
+    palette = ("n1", "n2", "n3", "n4")
+    for idx, (k, v) in enumerate(noise_items):
+        p = round(100 * v / total_u)
+        segs.append(f'<i class="seg-{palette[idx]}" style="width:{max(p, 1)}%" title="{_esc(k)}: {v:,}"></i>')
+        legend.append(f'<span><b class="sw {palette[idx]}"></b><b>{v:,}</b> {_esc(k)}</span>')
+    noise_card = (
+        '<div class="viz-card">'
+        '<div class="panel-k">Signal vs. filtered noise</div>'
+        f'<div class="stack-bar">{"".join(segs)}</div>'
+        f'<div class="stack-leg">{"".join(legend)}</div>'
+        '</div>'
+    )
+
+    # 2. Prompt length distribution (<80 / 80-200 / >200 chars)
+    lens = [len(p["text"]) for p in corpus.real_prompts]
+    tot_p = max(1, len(lens))
+    short_n = sum(1 for L in lens if L < 80)
+    mid_n = sum(1 for L in lens if 80 <= L <= 200)
+    long_n = sum(1 for L in lens if L > 200)
+    sp, mp, lp = round(100 * short_n / tot_p), round(100 * mid_n / tot_p), round(100 * long_n / tot_p)
+    med = int(statistics.median(lens)) if lens else 0
+    len_card = (
+        '<div class="viz-card">'
+        f'<div class="panel-k">Prompt length mix <span class="muted-sm">median {med} chars</span></div>'
+        f'<div class="stack-bar">'
+        f'<i class="seg-n2" style="width:{sp}%" title="Short (<80): {short_n}"></i>'
+        f'<i class="seg-acc" style="width:{mp}%" title="Focused (80-200): {mid_n}"></i>'
+        f'<i class="seg-real" style="width:{lp}%" title="Detailed (>200): {long_n}"></i>'
+        f'</div>'
+        f'<div class="stack-leg">'
+        f'<span><b class="sw n2"></b><b>{sp}%</b> short (&lt;80)</span>'
+        f'<span><b class="sw acc"></b><b>{mp}%</b> focused (80–200)</span>'
+        f'<span><b class="sw real"></b><b>{lp}%</b> detailed (&gt;200)</span>'
+        f'</div></div>'
+    )
+
+    # 3. Top 6 tools bar chart (case-folded across sources so Bash/bash and Edit/edit merge)
+    merged_tools = Counter()
+    nice_name = {}
+    for tname, cnt in corpus.tool_usage.items():
+        key = tname.lower()
+        merged_tools[key] += cnt
+        if key not in nice_name or (tname[:1].isupper() and not nice_name[key][:1].isupper()):
+            nice_name[key] = tname
+    top_tools = merged_tools.most_common(6)
+    if top_tools:
+        mx = top_tools[0][1] or 1
+        trows = []
+        for key, cnt in top_tools:
+            lbl = nice_name.get(key, key)
+            w = max(4, round(100 * cnt / mx))
+            trows.append(
+                f'<div class="tbar"><span>{_esc(lbl[:16])}</span>'
+                f'<b><i style="width:{w}%"></i></b><em>{cnt:,}</em></div>'
+            )
+        tools_body = "".join(trows)
+    else:
+        tools_body = '<p class="muted-sm">No tool calls recorded in these logs.</p>'
+    tools_card = (
+        '<div class="viz-card">'
+        f'<div class="panel-k">Top tools <span class="muted-sm">{corpus.total_tool_calls:,} calls · {corpus.delegation_events} delegations</span></div>'
+        f'{tools_body}</div>'
+    )
+
+    return f'<div class="viz-grid">{noise_card}{len_card}{tools_card}</div>'
+
+
+def _analysis_section_html(analysis, dim_html=""):
+    """Render the unified AI-authored 4D skill map in a clean 2x2 editorial grid,
+    with compact Tufte bullet-chart dimension rows nested underneath."""
     if not analysis or not isinstance(analysis, dict):
         return ""
-    parts = ['<section><h3>Skill map — analyzed against the AI Fluency framework</h3>']
-    read = analysis.get("overall_read") or analysis.get("summary")
-    if read:
-        parts.append(f'<p class="assess">{_esc(read)}</p>')
+    cards = []
     for s in analysis.get("skill_map") or []:
         if not isinstance(s, dict):
             continue
@@ -1914,22 +2340,27 @@ def _analysis_section_html(analysis):
         label = _esc(s.get("level_label", ""))
         summ = _esc(s.get("summary", ""))
         nxt = _esc(s.get("next_move", ""))
-        ev = "".join(f"<li>“{_esc(str(x)[:200])}”</li>" for x in (s.get("evidence") or [])[:3])
-        parts.append(
-            f'<div class="dim"><div class="dim-h"><b>{comp}</b>'
-            f'<span class="pill">Level {_esc(lvl)}/5 · {label}</span></div>'
-            f'<p>{summ}</p>'
-            + (f'<ul class="ev">{ev}</ul>' if ev else "")
-            + (f'<p class="next"><b>Your next move:</b> {nxt}</p>' if nxt else "")
-            + '</div>')
+        ev = "".join(f'<li>“{_esc(str(x)[:160])}”</li>' for x in (s.get("evidence") or [])[:2])
+        cards.append(
+            f'<div class="comp-card">'
+            f'<div class="comp-h"><b>{comp}</b>'
+            f'<span class="comp-lvl">{_dots_html(lvl)}<span class="pill">L{_esc(lvl)} · {label}</span></span></div>'
+            f'<p class="comp-s">{summ}</p>'
+            + (f'<ul class="mini-ev">{ev}</ul>' if ev else "")
+            + (f'<div class="comp-next"><span>Next →</span> {nxt}</div>' if nxt else "")
+            + '</div>'
+        )
+    parts = [
+        '<section><h3>Skill map — analyzed against the AI Fluency framework</h3>',
+        f'<div class="comp-grid">{"".join(cards)}</div>',
+    ]
     strengths = analysis.get("strengths") or []
     if strengths:
-        items = "".join(f"<li>{_esc(s)}</li>" for s in strengths[:5])
-        parts.append(f'<p style="margin-top:14px"><b>What you already do well:</b></p><ul class="facts">{items}</ul>')
-    parts.append('<p style="color:var(--mut);font-size:13px;margin-top:10px">'
-                 'This section is written by Claude Opus 4.8 from your de-contaminated evidence '
-                 '(explored by Claude Sonnet 4.6), grounded in the bundled AI Fluency framework. '
-                 'The numbers above are computed deterministically and independently.</p>')
+        pills = "".join(f'<span class="str-chip">✓ {_esc(s)}</span>' for s in strengths[:4])
+        parts.append(f'<div class="str-strip"><span class="str-k">Strengths</span>{pills}</div>')
+    if dim_html:
+        parts.append('<div class="subh">Behind the map — 5 measured dimensions <span class="muted-sm">(target 85)</span></div>' + dim_html)
+    parts.append('<p class="foot-note">4D levels by Claude Opus 4.8 (explored by Sonnet 4.6) from de-contaminated evidence; scores computed deterministically.</p>')
     parts.append('</section>')
     return "".join(parts)
 
@@ -1947,21 +2378,515 @@ def _dim_sources_note(result, name, n_sources):
     if not feeding or n_sources <= 1 or len(feeding) == n_sources:
         return ""
     names = ", ".join(NICE_SOURCE.get(s, s) for s in feeding)
-    return f'<span class="wt"> · measured from {_esc(names)}</span>'
+    return f'<span class="wt"> · {_esc(names)}</span>'
+
+
+def _highlight_prompt_html(text):
+    """Wrap Target, Rule, Why, and Check cues inside a prompt with <mark> spans while
+    keeping .textContent identical so copyPrompt() still copies clean plain text."""
+    if not text:
+        return ""
+    spans = []
+    # Priority 0: Targets (backticks/files/paths) — if a backtick holds a test cmd, tag as Check!
+    for m in ARTIFACT_RE.finditer(text):
+        seg = m.group(0)
+        if VERIFY_RE.search(seg) and not re.search(r"^[\w./\-]+\.(py|ts|tsx|js|jsx|css|html|md|json|go|rs)$", seg, re.I):
+            spans.append((0, m.start(), m.end(), "hl-v", "Built-in check"))
+        else:
+            spans.append((0, m.start(), m.end(), "hl-t", "Named target"))
+    # Priority 1: Verification phrases / commands
+    for rx in (_VERIFY_PROMPT_RE, VERIFY_RE):
+        for m in rx.finditer(text):
+            spans.append((1, m.start(), m.end(), "hl-v", "Built-in check"))
+    # Priority 2: Intent ("why")
+    for m in INTENT_CUE.finditer(text):
+        spans.append((2, m.start(), m.end(), "hl-w", "Stated why"))
+    # Priority 3: Constraints ("rule")
+    for m in CONSTRAINT_CUE.finditer(text):
+        spans.append((3, m.start(), m.end(), "hl-r", "Clear rule"))
+
+    spans.sort(key=lambda x: (x[0], -(x[2] - x[1]), x[1]))
+    chosen = []
+    for prio, st, en, cls, title in spans:
+        if en <= st:
+            continue
+        if any(not (en <= c[0] or st >= c[1]) for c in chosen):
+            continue
+        chosen.append((st, en, cls, title))
+    chosen.sort(key=lambda x: x[0])
+
+    out = []
+    pos = 0
+    for st, en, cls, title in chosen:
+        if st > pos:
+            out.append(_esc(text[pos:st]))
+        out.append(f'<mark class="{cls}" title="{title}">{_esc(text[st:en])}</mark>')
+        pos = en
+    if pos < len(text):
+        out.append(_esc(text[pos:]))
+    return "".join(out)
+
+
+def _subcorpus_analyze(corpus, sids, fallback_caps=None, light_shrink=False):
+    """Score a subset of sessions cleanly using the exact same dimension scorers and
+    per-session capability masks (so Codex sessions never poison Context)."""
+    sid_set = set(sids)
+    sess_caps = getattr(corpus, "session_caps", None) or {}
+
+    def make_sub(filter_dim=None):
+        sub = Corpus()
+        for sid in sid_set:
+            sess = corpus.sessions.get(sid)
+            if not sess:
+                continue
+            caps = sess_caps.get(sid) or fallback_caps or {}
+            if filter_dim and filter_dim not in _measurable_dims(caps):
+                continue
+            sub.files += 1
+            sub.projects.add(sess["project"])
+            tl = []
+            for ev in sess["timeline"]:
+                if ev.get("kind") == "prompt":
+                    rec = ev["rec"]
+                    sub.real_prompts.append(rec)
+                    tl.append(ev)
+                elif ev.get("kind") == "tool":
+                    nm = ev["name"]
+                    sub.tool_usage[nm] += 1
+                    sub.total_tool_calls += 1
+                    if nm in DELEGATION_TOOLS:
+                        sub.delegation_events += 1
+                    tl.append(ev)
+            sub.sessions[sid] = {"project": sess["project"], "timeline": tl}
+        return sub
+
+    full_sub = make_sub(None)
+    if not full_sub.real_prompts:
+        return None
+    full_sub.active_seconds = max(1800.0, len(full_sub.real_prompts) * 60.0)
+
+    raw, shrunk, measurable = {}, {}, []
+    for name, fn in (("Direction", score_direction), ("Verification", score_verification),
+                     ("Context", score_context), ("Iteration", score_iteration),
+                     ("Toolcraft", score_toolcraft)):
+        dsub = make_sub(name)
+        if not dsub.real_prompts:
+            continue
+        dsub.active_seconds = max(1800.0, len(dsub.real_prompts) * 60.0)
+        sc, det, _ = fn(dsub)
+        n = det.get("n", 0)
+        if n == 0 and name in ("Context", "Verification"):
+            continue
+        tgt = max(4, TARGET_N[name] // 3) if light_shrink else TARGET_N[name]
+        sh, _ = shrink(sc, n, tgt)
+        raw[name] = sc
+        shrunk[name] = sh
+        measurable.append(name)
+
+    if not measurable:
+        return None
+    wsum = sum(WEIGHTS[n] for n in measurable) or 1.0
+    overall = round(sum(WEIGHTS[n] * shrunk[n] for n in measurable) / wsum)
+    corr = _find_corrections(full_sub)
+    corr_rate = round(100 * len(corr) / max(1, len(full_sub.real_prompts)))
+    return {
+        "overall": overall,
+        "prompts": len(full_sub.real_prompts),
+        "corr_rate": corr_rate,
+        "dims": {k: round(shrunk[k]) for k in measurable},
+    }
+
+
+def _trajectory_chart_html(corpus, result, fallback_caps=None, history=None):
+    """Inline SVG score-trajectory sparkline across chronological session buckets."""
+    ts_map = getattr(corpus, "session_ts", None) or {}
+    dated = [(ts_map[sid], sid) for sid in corpus.sessions if sid in ts_map]
+    dated.sort(key=lambda x: x[0])
+
+    points = []
+    if len(dated) >= 3 and (dated[-1][0] - dated[0][0]).days >= 1:
+        # Group into up to 6 balanced chronological buckets so noisy 1-prompt days coalesce.
+        k_buckets = min(6, max(3, len(dated) // 2))
+        buckets = [[] for _ in range(k_buckets)]
+        t0 = dated[0][0].timestamp()
+        span = max(1.0, dated[-1][0].timestamp() - t0)
+        for ts, sid in dated:
+            idx = min(k_buckets - 1, int(((ts.timestamp() - t0) / span) * k_buckets))
+            buckets[idx].append((ts, sid))
+        for b in buckets:
+            if not b:
+                continue
+            stat = _subcorpus_analyze(corpus, [sid for _, sid in b], fallback_caps, light_shrink=True)
+            if stat:
+                lbl = b[0][0].strftime("%b %-d") if sys.platform != "win32" else b[0][0].strftime("%b %d")
+                points.append((lbl, stat["overall"], stat["prompts"]))
+
+    # Fall back to prior saved snapshot trajectory if sessions lacked dates
+    span_days = (dated[-1][0] - dated[0][0]).days if dated else 0
+    mode_lbl = f"{span_days}d" if span_days >= 1 else "span"
+    if len(points) < 3 and history and len(history) >= 2:
+        points = [(h.get("label", "?"), int(h.get("overall", 0)), int(h.get("prompts", 0)))
+                  for h in history[-8:]]
+        mode_lbl = f"{len(points)} runs"
+
+    if len(points) < 3:
+        return (
+            '<div class="viz-card">'
+            '<div class="panel-k">Score trajectory</div>'
+            '<p class="muted-sm" style="margin-top:10px">Build across 3+ days to unlock your chronological score trajectory.</p>'
+            '</div>'
+        )
+
+    W, H = 340, 128
+    px0, px1, py0, py1 = 26, W - 20, 18, H - 24
+    lo = max(0, min(p[1] for p in points) - 12)
+    hi = min(100, max(p[1] for p in points) + 10)
+    if hi - lo < 25:
+        mid = (hi + lo) / 2
+        lo, hi = max(0, mid - 15), min(100, mid + 15)
+
+    def xy(i, val):
+        x = px0 + (px1 - px0) * (i / max(1, len(points) - 1))
+        y = py1 - (py1 - py0) * ((val - lo) / max(1.0, hi - lo))
+        return x, y
+
+    coords = [xy(i, p[1]) for i, p in enumerate(points)]
+    line_d = " ".join(f"{'M' if i == 0 else 'L'} {x:.1f} {y:.1f}" for i, (x, y) in enumerate(coords))
+    area_d = f"{line_d} L {coords[-1][0]:.1f} {py1:.1f} L {coords[0][0]:.1f} {py1:.1f} Z"
+    _, base_y = xy(0, result["overall"])
+
+    dots = []
+    for i, ((x, y), (lbl, sc, pr)) in enumerate(zip(coords, points)):
+        col = "var(--ok)" if sc >= 75 else ("var(--warn)" if sc < 55 else "var(--accent)")
+        dots.append(
+            f'<g><circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{col}" stroke="var(--surface)" stroke-width="1.5">'
+            f'<title>{_esc(lbl)}: {sc}/100 ({pr} prompts)</title></circle>'
+            f'<text x="{x:.1f}" y="{max(11.0, y - 8):.1f}" text-anchor="middle" class="tr-v">{sc}</text></g>'
+        )
+
+    delta = points[-1][1] - points[0][1]
+    d_cls = "ok" if delta > 2 else ("bad" if delta < -2 else "acc")
+    d_str = f"{delta:+d} pts · {mode_lbl}"
+
+    return (
+        '<div class="viz-card">'
+        f'<div class="panel-k">Score trajectory <span class="delta-pill {d_cls}">{d_str}</span></div>'
+        f'<svg viewBox="0 0 {W} {H}" class="traj-svg" role="img" aria-label="Score trajectory over time">'
+        f'<line x1="{px0}" y1="{base_y:.1f}" x2="{px1}" y2="{base_y:.1f}" stroke="var(--line)" stroke-dasharray="3 3"/>'
+        f'<path d="{area_d}" fill="var(--accent-soft)"/>'
+        f'<path d="{line_d}" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>'
+        f'{"".join(dots)}'
+        f'<text x="{px0}" y="{H - 5}" text-anchor="start" class="tr-x">{_esc(points[0][0])}</text>'
+        f'<text x="{(px0 + px1) / 2:.1f}" y="{H - 5}" text-anchor="middle" class="tr-x">Avg {result["overall"]}</text>'
+        f'<text x="{px1}" y="{H - 5}" text-anchor="end" class="tr-x">{_esc(points[-1][0])}</text>'
+        '</svg></div>'
+    )
+
+
+def _project_breakdown_html(corpus, fallback_caps=None):
+    """Per-project score bars comparing prompt craft across repos."""
+    by_proj = defaultdict(list)
+    for sid, sess in corpus.sessions.items():
+        by_proj[_project_label(sess["project"])].append(sid)
+    rows = []
+    for pname, sids in by_proj.items():
+        stat = _subcorpus_analyze(corpus, sids, fallback_caps, light_shrink=True)
+        if stat and stat["prompts"] >= 1:
+            rows.append((stat["prompts"], stat["overall"], stat["corr_rate"], pname))
+    if len(rows) < 2:
+        return ""
+    rows.sort(key=lambda x: (-x[0], -x[1]))
+    bars = []
+    for prompts, sc, cr, pname in rows[:5]:
+        tone = "ok" if sc >= 75 else ("bad" if sc < 55 else "acc")
+        bars.append(
+            f'<div class="proj-row">'
+            f'<span class="proj-n" title="{_esc(pname)}">{_esc(pname)}</span>'
+            f'<span class="bullet"><i class="{tone}" style="width:{sc}%"></i><b class="tick" style="left:85%"></b></span>'
+            f'<span class="proj-m"><b>{sc}</b> · {prompts}p</span>'
+            f'</div>'
+        )
+    return (
+        '<div class="viz-card">'
+        '<div class="panel-k">Score by project <span class="muted-sm">(target 85)</span></div>'
+        + "".join(bars) + '</div>'
+    )
+
+
+def _retry_spiral_html(corpus):
+    """Visualize first-try clean vs. 1-correction vs. 2+ retry spirals across sessions."""
+    clean = one_fix = spiral = 0
+    max_streak = 0
+    for _, _, timeline in _iter_sessions(corpus):
+        saw_tool = False
+        streak = 0
+        had_episode = False
+        for ev in timeline:
+            if ev["kind"] == "tool":
+                saw_tool = True
+                had_episode = True
+                continue
+            head = ev["text"][:160]
+            is_corr = bool(saw_tool and CORRECTION_CUE.search(head) and not PRAISE_CUE.search(head))
+            if is_corr:
+                streak += 1
+                max_streak = max(max_streak, streak)
+            elif had_episode:
+                if streak == 0:
+                    clean += 1
+                elif streak == 1:
+                    one_fix += 1
+                else:
+                    spiral += 1
+                streak = 0
+                had_episode = False
+            saw_tool = False
+        if had_episode:
+            if streak == 0:
+                clean += 1
+            elif streak == 1:
+                one_fix += 1
+            else:
+                spiral += 1
+
+    tot = clean + one_fix + spiral
+    if tot == 0:
+        return (
+            '<div class="viz-card">'
+            '<div class="panel-k">Turn resolution</div>'
+            '<p class="muted-sm" style="margin-top:10px">No tool-assisted edit turns logged yet.</p>'
+            '</div>'
+        )
+    cp = round(100 * clean / tot)
+    op = round(100 * one_fix / tot)
+    sp = max(0, 100 - cp - op)
+    return (
+        '<div class="viz-card">'
+        f'<div class="panel-k">First-try vs. retry spiral <span class="muted-sm">{tot} episodes</span></div>'
+        '<div class="stack-bar">'
+        f'<i class="seg-real" style="width:{cp}%" title="Landed clean: {clean}"></i>'
+        f'<i class="seg-n2" style="width:{op}%" title="1 retry: {one_fix}"></i>'
+        f'<i class="seg-n3" style="width:{sp}%" title="2+ retry spiral: {spiral}"></i>'
+        '</div>'
+        '<div class="stack-leg">'
+        f'<span><b class="sw real"></b><b>{cp}%</b> first-try clean ({clean})</span>'
+        f'<span><b class="sw n2"></b><b>{op}%</b> 1 retry ({one_fix})</span>'
+        f'<span><b class="sw n3"></b><b>{sp}%</b> 2+ spiral ({spiral})</span>'
+        '</div>'
+        + (f'<p class="muted-sm" style="margin-top:8px">Longest retry chain: <b>{max_streak}</b> back-to-back corrections.</p>'
+           if max_streak >= 2 else '<p class="muted-sm" style="margin-top:8px">Zero multi-turn retry spirals detected.</p>')
+        + '</div>'
+    )
+
+
+def _patterns_section_html(corpus, result, fallback_caps=None, history=None):
+    """Trajectory, project breakdown, and first-try resolution visuals."""
+    traj = _trajectory_chart_html(corpus, result, fallback_caps, history)
+    proj = _project_breakdown_html(corpus, fallback_caps)
+    spiral = _retry_spiral_html(corpus)
+    cards = [traj] + ([proj] if proj else []) + [spiral]
+    cls = "viz-grid" if len(cards) == 3 else "viz-grid two"
+    return f'<section><h3>Patterns across your sessions</h3><div class="{cls}">{"".join(cards)}</div></section>'
+
+
+def _verdict_strip_html(corpus, result, cards, strength):
+    """Crisp 3-tile takeaway strip replacing the multi-paragraph deterministic summary."""
+    s_name = disp(strength)
+    s_sc = round(result["shrunk"][strength])
+    if cards and cards[0]["score"] < 85:
+        b = cards[0]
+        b_name = disp(b["dim"])
+        b_sc = b["score"]
+        b_up = round(b["impact"], 1)
+        b_move = SKILL_TEACH[b["dim"]]["practice"]
+        b_tile = (f'<div class="vcard v-warn"><div class="vk">⚡ Biggest bottleneck</div>'
+                  f'<div class="vt">{_esc(b_name)} · {b_sc}/100</div>'
+                  f'<div class="vs">+{b_up:.1f} pts available toward 85 target</div></div>')
+        n_tile = (f'<div class="vcard v-acc"><div class="vk">🎯 #1 habit next session</div>'
+                  f'<div class="vt">Fix {_esc(b_name)}</div>'
+                  f'<div class="vs">{_esc(b_move)}</div></div>')
+    else:
+        b_tile = ('<div class="vcard v-ok"><div class="vk">⚡ Bottleneck</div>'
+                  '<div class="vt">All measured skills ≥ 85</div>'
+                  '<div class="vs">Consistent expert-level execution</div></div>')
+        n_tile = ('<div class="vcard v-acc"><div class="vk">🎯 Next stretch</div>'
+                  '<div class="vt">Stay sharp across tools</div>'
+                  '<div class="vs">Keep target, rule, why, and check in one sentence.</div></div>')
+
+    return (
+        '<div class="verdict-grid">'
+        f'<div class="vcard v-ok"><div class="vk">✓ Strongest habit</div>'
+        f'<div class="vt">{_esc(s_name)} · {s_sc}/100</div>'
+        f'<div class="vs">{len(corpus.real_prompts):,} real prompts across {len(corpus.projects)} projects</div></div>'
+        f'{b_tile}{n_tile}</div>'
+    )
+
+
+def _dojo_html(corpus, cards, analysis=None):
+    """Interactive 10-second prompt rewrite trainer with live Target/Rule/Why/Check lights."""
+    samples = []
+    seen = set()
+    if analysis and isinstance(analysis, dict):
+        for g in (analysis.get("top_growth") or []):
+            if not isinstance(g, dict):
+                continue
+            bef = str(g.get("example_before") or "").strip()
+            aft = str(g.get("example_after") or "").strip()
+            if bef and bef.lower() not in seen:
+                seen.add(bef.lower())
+                samples.append((bef[:220], aft[:420]))
+    if not samples:
+        for c in (cards or []):
+            for e in (c.get("weak") or []):
+                txt = _scrub_paths(str(e.get("text") or "")).strip()
+                if txt and txt.lower() not in seen:
+                    seen.add(txt.lower())
+                    samples.append((txt[:220], ""))
+                if len(samples) >= 3:
+                    break
+            if len(samples) >= 3:
+                break
+    if not samples:
+        sh = _shortest_action_prompt(corpus)
+        if sh:
+            samples.append((_scrub_paths(sh)[:220], ""))
+    if not samples:
+        samples.append(("update the script", ""))
+
+    chips = []
+    for idx, (bef, aft) in enumerate(samples[:3]):
+        lbl = bef[:34] + ("…" if len(bef) > 34 else "")
+        act = " active" if idx == 0 else ""
+        chips.append(
+            f'<button type="button" class="dchip{act}" data-before="{_esc(bef)}" data-after="{_esc(aft)}" '
+            f'onclick="dojoPick(this)">“{_esc(lbl)}”</button>'
+        )
+    first_bef, first_aft = samples[0]
+    peek_btn = (
+        '<button type="button" class="copy-btn" onclick="dojoPeek(this)">Peek rewrite</button>'
+        if first_aft else
+        '<button type="button" class="copy-btn" style="display:none" onclick="dojoPeek(this)">Peek rewrite</button>'
+    )
+    return (
+        '<div class="action-card dojo">'
+        '<div class="panel-k">⚡ 10-second rewrite dojo <span class="dojo-score">0/4 anchors</span></div>'
+        f'<div class="dchips">{"".join(chips)}</div>'
+        f'<textarea class="dojo-in" rows="3" oninput="dojoEval(this)" placeholder="Rewrite this prompt with Target + Rule + Why + Check...">{_esc(first_bef)}</textarea>'
+        '<div class="dojo-lights">'
+        '<span class="dl" data-k="target">Target</span>'
+        '<span class="dl" data-k="rule">Rule</span>'
+        '<span class="dl" data-k="why">Why</span>'
+        '<span class="dl" data-k="check">Check</span>'
+        '<div class="dojo-btns">'
+        f'{peek_btn}'
+        '<button type="button" class="copy-btn" onclick="dojoCopy(this)">Copy rewrite</button>'
+        '</div></div>'
+        f'<div class="dojo-peek" style="display:none" data-after="{_esc(first_aft)}"></div>'
+        '</div>'
+    )
+
+
+def _detect_verify_cmd(corpus):
+    """Find the user's most common real verification command for the drop-in rules card."""
+    cmds = Counter()
+    for _, _, timeline in _iter_sessions(corpus):
+        for ev in timeline:
+            if ev.get("kind") == "tool" and ev.get("name") == "bash":
+                cmd = (ev.get("cmd") or "").strip()
+                if cmd and VERIFY_RE.search(cmd):
+                    short = cmd.split("&&")[0].strip()[:48]
+                    cmds[short] += 1
+    if cmds:
+        return cmds.most_common(1)[0][0]
+    return "the project test suite"
+
+
+def _rules_generator_html(corpus, cards, source=None):
+    """1-click copyable CLAUDE.md / AGENTS.md / .cursorrules block tailored to top weak dims."""
+    cmd = _detect_verify_cmd(corpus)
+    weak_dims = [c["dim"] for c in (cards or [])[:2]]
+    rules = []
+    if "Context" in weak_dims or "Direction" in weak_dims:
+        rules.append("- Read the target file(s) before making any edit.")
+    rules.append("- Before coding non-trivial changes, confirm the exact files and untouched invariants.")
+    if "Iteration" in weak_dims:
+        rules.append("- If a check fails, state the root cause and fix rule before applying the next edit.")
+    rules.append(f"- Run `{cmd}` after edits and paste the real output before declaring done.")
+    if "Toolcraft" in weak_dims:
+        rules.append("- Prefer search/read tools over guessing paths; ask before adding new dependencies.")
+
+    default_file = "CLAUDE.md"
+    if source == "codex":
+        default_file = "AGENTS.md"
+    elif source == "cursor":
+        default_file = ".cursorrules"
+
+    tabs = []
+    for fn in ("CLAUDE.md", "AGENTS.md", ".cursorrules"):
+        act = " active" if fn == default_file else ""
+        tabs.append(f'<button type="button" class="rftab{act}" onclick="setRuleFile(this,\'{fn}\')">{fn}</button>')
+
+    body = "## AI Collaboration Rules\n" + "\n".join(rules[:4])
+    return (
+        '<div class="action-card rules-card">'
+        f'<div class="panel-k">📋 Project guardrail <div class="rftabs">{"".join(tabs)}</div></div>'
+        '<p class="muted-sm" style="margin-bottom:8px">Paste at the bottom of your <b class="rf-name">'
+        f'{default_file}</b> so your agent enforces your #1 growth habits automatically:</p>'
+        f'<pre class="rules-pre copy-src">{_esc(body)}</pre>'
+        '<div style="display:flex;justify-content:flex-end;margin-top:8px">'
+        '<button type="button" class="copy-btn" onclick="copyPre(this)">Copy rule block</button>'
+        '</div></div>'
+    )
+
+
+def _best_prompts_html(best_prompts, anatomy_html=""):
+    """Render Prompt Anatomy target bars + inline-highlighted 'Your best prompts' playbook."""
+    key_legend = (
+        '<div class="hl-key">'
+        '<span>Inside each prompt:</span>'
+        '<mark class="hl-t">Target</mark>'
+        '<mark class="hl-r">Rule</mark>'
+        '<mark class="hl-w">Why</mark>'
+        '<mark class="hl-v">Check</mark>'
+        '</div>'
+    )
+    if not best_prompts:
+        body = (
+            '<div class="empty-box">'
+            'No multi-anchor prompts stood out yet — pair a goal with two or more anchors '
+            '(a file/symbol, a clear rule, a why, or a test check) and your strongest real prompts will appear here.'
+            '</div>'
+        )
+    else:
+        cards = []
+        for bp in best_prompts:
+            chips = "".join(f'<span class="hchip">✓ {_esc(h)}</span>' for h in bp.get("habits") or [])
+            src = bp.get("source")
+            src_tag = f" · {_esc(NICE_SOURCE.get(src, src))}" if src else ""
+            proj = _esc(bp.get("project", ""))
+            cards.append(
+                f'<div class="best-card">'
+                f'<div class="best-top"><span class="best-loc">{proj}{src_tag}</span></div>'
+                f'<p class="best-q">“{_highlight_prompt_html(bp["text"])}”</p>'
+                f'<div class="best-chips">{chips}</div>'
+                f'</div>'
+            )
+        body = f'{key_legend}<div class="best-grid">{"".join(cards)}</div>'
+    return (
+        '<section><h3>Your best prompts — your personal playbook</h3>'
+        f'{anatomy_html}{body}</section>'
+    )
 
 
 def _growth_cards_html(analysis):
-    """The 'how to grow' cards, written FOR THIS PERSON by the Opus analysis stage:
-    each item names the habit, why it matters, how to grow it, and a before/after where
-    the 'before' is one of THEIR real prompts and the 'after' is Opus's tailored rewrite.
-    Returns '' when there is no analysis (the caller then falls back to the generic
-    teaching examples), so the report only ever shows canned examples when no AI ran."""
+    """Split Opus rewrites into (featured_card_1, collapsed_more_cards) with inline highlights & Copy."""
     if not analysis or not isinstance(analysis, dict):
-        return ""
+        return "", ""
     items = [g for g in (analysis.get("top_growth") or []) if isinstance(g, dict)]
     if not items:
-        return ""
-    out = []
+        return "", ""
+    featured = ""
+    more = []
     for i, g in enumerate(items[:4]):
         title = _esc(g.get("title", "Your next growth move"))
         why = _esc(g.get("why", ""))
@@ -1969,31 +2894,46 @@ def _growth_cards_html(analysis):
         before = g.get("example_before")
         after = g.get("example_after")
         src = g.get("source")
-        src_tag = f" · in {_esc(NICE_SOURCE.get(src, src))}" if src else ""
+        src_pill = f'<span class="tool-tag">{_esc(NICE_SOURCE.get(src, src))}</span>' if src else ""
+        src_tag = f" · {_esc(NICE_SOURCE.get(src, src))}" if src else ""
         ba = ""
         if before and after:
             works = g.get("why_it_works")
             works_html = ""
             if isinstance(works, list) and works:
-                works_html = ('<ul class="works">' +
-                              "".join(f"<li>{_esc(str(w)[:200])}</li>" for w in works[:3]) +
-                              "</ul>")
-            gain = g.get("expected_gain")
-            gain_html = (f'<p class="gain"><b>What you should see:</b> {_esc(str(gain)[:260])}</p>'
-                         if gain else "")
-            ba = (f'<div class="ba"><div class="before"><span>A prompt you wrote{src_tag}</span>'
-                  f'“{_esc(str(before)[:400])}”</div>'
-                  f'<div class="after"><span>How to write it instead</span>'
-                  f'“{_esc(str(after)[:600])}”</div></div>' + works_html + gain_html)
-        out.append(
-            f'<div class="card prio"><div class="ph">Priority {i + 1} · written for you</div>'
-            f'<h4>{title}</h4>'
-            + (f'<p class="why"><b>Why it matters.</b> {why}</p>' if why else "")
-            + (f'<div class="wwh"><span class="lab">How to grow it</span>'
-               + (f'<p class="how">{how}</p>' if how else "") + f'{ba}</div>'
-               if (how or ba) else "")
-            + '</div>')
-    return "".join(out)
+                works_html = ('<div class="works-chips">' +
+                              "".join(f'<span>+ {_esc(str(w)[:140])}</span>' for w in works[:3]) +
+                              '</div>')
+            ba = (
+                f'<div class="ba">'
+                f'<div class="before"><div class="ba-h"><span>Before{src_tag}</span></div>'
+                f'<p>“{_esc(str(before)[:400])}”</p></div>'
+                f'<div class="after"><div class="ba-h"><span>How to write it instead</span>'
+                f'<button type="button" class="copy-btn" onclick="copyPrompt(this)">Copy</button></div>'
+                f'<p class="copy-src">“{_highlight_prompt_html(str(after)[:600])}”</p></div>'
+                f'</div>{works_html}'
+            )
+        if i == 0:
+            featured = (
+                f'<div class="gcard featured">'
+                f'<div class="focus-k">🎯 Start here · 01 · #1 move next session</div>'
+                f'<div class="gcard-h" style="margin-top:6px"><div class="gtitle"><h4>{title}</h4></div>'
+                f'<div class="gbadges">{src_pill}<span class="pill">written for you</span></div></div>'
+                + (f'<p class="ghow"><b>Move:</b> {how}</p>' if how else "")
+                + ba + '</div>'
+            )
+        else:
+            teaser = f'“{_esc(str(before)[:42])}”' if before else why
+            more.append(
+                f'<details class="gmore"><summary>'
+                f'<span class="gnum">0{i + 1}</span><b>{title}</b>'
+                f'{src_pill}<span class="gmore-t">{teaser}</span><span class="gmore-c">Expand ▾</span>'
+                f'</summary><div class="gmore-body">'
+                + (f'<p class="gwhy" style="margin-bottom:6px">{why}</p>' if why else "")
+                + (f'<p class="ghow" style="margin-top:0"><b>Move:</b> {how}</p>' if how else "")
+                + ba + '</div></details>'
+            )
+    return featured, "".join(more)
 
 
 # --------------------------------------------------------------------------- #
@@ -2046,7 +2986,7 @@ ARCH_PATHS = {
 }
 
 _SIG_DESC = {
-    "Delegation": "how much you hand off — you give Claude whole jobs and trust it to run them end-to-end",
+    "Delegation": "how much you hand off — you give the agent whole jobs and trust it to run them end-to-end",
     "Toolcraft": "the range of tools you bring to bear — you reach past the shell for the right instrument",
     "Iteration": "how cleanly you change course — your corrections tend to name the fix, not just reject",
     "Briefing": "how concretely you frame requests when it matters",
@@ -2054,7 +2994,7 @@ _SIG_DESC = {
 
 # The specific, evidence-grounded line that explains each dimension as a growth edge.
 _GROWTH_LINE = {
-    "Direction": "{s}s win on how sharply they frame the work they hand off — and right now yours are often one-liners like “{ex}”, so Claude fills gaps you could have decided.",
+    "Direction": "{s}s win on how sharply they frame the work they hand off — and right now yours are often one-liners like “{ex}”, so the agent fills gaps you could have decided.",
     "Verification": "Right now changes often move on without a test, build or run to confirm them — the cheapest reliability you can buy back.",
     "Context": "Right now some edits land before the file has been read that session — an easy blind-edit risk to remove.",
     "Iteration": "Right now corrections lean toward brief rejections; naming the symptom and the exact rule resolves loops in fewer turns.",
@@ -2062,531 +3002,776 @@ _GROWTH_LINE = {
 }
 
 
-def build_assessment(corpus, result, cards):
-    """A coherent, professional written read — synthesizes the numbers into one story
-    and explicitly resolves the archetype-vs-weakest-dimension tension."""
+def build_assessment(corpus, result, cards, source=None):
+    """A coherent, truthful written read — synthesizes the numbers into one story
+    grounded in THIS person's actual prompt style, top signal, and source tool(s)."""
     a = result["archetype"]
     arch = a["primary"]
     short = arch.replace("The ", "")
     art = "an" if short[:1] in "AEIOU" else "a"
     deleg = a["delegation_score"]
     n_deleg = corpus.delegation_events
-    median = result["dist"].get("median_chars", "?")
+    median = result["dist"].get("median_chars")
+    measurable = set(result.get("measurable") or list(WEIGHTS))
 
-    # signature strength = your strongest USER-driven signal (not Claude's defaults)
-    user_signals = {
-        "Briefing": result["shrunk"]["Direction"], "Iteration": result["shrunk"]["Iteration"],
-        "Toolcraft": result["shrunk"]["Toolcraft"], "Delegation": float(deleg),
-    }
+    if result.get("combined"):
+        agent_label = "AI"
+    elif source in NICE_SOURCE:
+        agent_label = NICE_SOURCE[source]
+    else:
+        agent_label = source or "Claude"
+
+    if isinstance(median, int):
+        if median < 80:
+            prompt_style = f"short, fast prompts (median {median} characters)"
+        elif median <= 200:
+            prompt_style = f"concise, focused prompts (median {median} characters)"
+        else:
+            prompt_style = f"detailed, context-rich prompts (median {median} characters)"
+    else:
+        prompt_style = "your prompts"
+
+    # Signature strength = strongest measurable USER-driven signal (not agent defaults).
+    user_signals = {}
+    if "Direction" in measurable:
+        user_signals["Briefing"] = result["shrunk"]["Direction"]
+    if "Iteration" in measurable:
+        user_signals["Iteration"] = result["shrunk"]["Iteration"]
+    if "Toolcraft" in measurable:
+        user_signals["Toolcraft"] = result["shrunk"]["Toolcraft"]
+        user_signals["Delegation"] = float(deleg)
+    if not user_signals:
+        user_signals["Briefing"] = result["shrunk"]["Direction"]
     sig = max(user_signals, key=user_signals.get)
+    sig_score = round(user_signals[sig])
 
-    growth = cards[0]["dim"]
-    growth_disp = disp(growth)
-    example = _shortest_action_prompt(corpus) or "run it"
-    path_why = ARCH_PATHS.get(arch, "Keep building the habits below and your next run will show the gain.")
+    if (sig == "Delegation" or deleg >= 45) and n_deleg > 0:
+        lead_signal = (f"Your delegation rate stands out at <b>{deleg}/100</b> "
+                       f"(from {n_deleg} hand-offs to subagents, background jobs and planning), "
+                       f"paired with {prompt_style}.")
+    else:
+        lead_signal = (f"Your clearest self-driven signal is <b>{_esc(sig)} ({sig_score}/100)</b>, "
+                       f"paired with {prompt_style}.")
 
-    p1 = (f"You drive Claude like <b>{_esc(a['label'])}</b>. {_esc(a['blurb'])} "
-          f"The clearest signal is your delegation rate — <b>{deleg}/100</b>, from {n_deleg} hand-offs to "
-          f"subagents, background jobs and planning — paired with fast, terse prompts (median "
-          f"{median} characters).")
+    blurb = a["blurb"]
+    if result.get("combined") or source not in (None, "claude-code", "claude-desktop"):
+        blurb = blurb.replace("let Claude pick", "let the agent pick")
+    p1 = f"You drive {_esc(agent_label)} like <b>{_esc(a['label'])}</b>. {_esc(blurb)} {lead_signal}"
 
-    # Only credit the read→edit→verify loop when the data actually shows it; otherwise this
-    # clause was claiming a discipline some users' own report contradicts (0% verified / grounded).
-    loop_ok = result["shrunk"]["Context"] >= 55 and result["shrunk"]["Verification"] >= 55
+    loop_ok = ("Context" in measurable and "Verification" in measurable
+               and result["shrunk"]["Context"] >= 55 and result["shrunk"]["Verification"] >= 55)
     p2_mid = ("That, plus the disciplined read→edit→verify loop your sessions show, is"
               if loop_ok else "That is")
     p2 = (f"Your strongest <i>self-driven</i> habit is {_esc(_SIG_DESC.get(sig, sig.lower()))}. "
           f"{p2_mid} why your overall score lands at <b>{result['overall']}/100 ({_esc(result['band'])})</b>.")
 
-    gline = _GROWTH_LINE.get(growth, "").format(s=_esc(short), ex=_esc(example))
-    p3 = (f"And the apparent tension, resolved: your lowest dimension is <b>{_esc(growth_disp)}</b> — but for "
-          f"{art} {_esc(short)} that isn't a contradiction, it's the <i>defining</i> growth edge. {gline} "
-          f"{_esc(path_why)}")
+    parts = [f'<p>{p1}</p>', f'<p>{p2}</p>']
+    if cards:
+        growth = cards[0]["dim"]
+        growth_disp = disp(growth)
+        example = _shortest_action_prompt(corpus) or "run it"
+        path_why = ARCH_PATHS.get(arch, "Keep building the habits below and your next run will show the gain.")
+        gline = _GROWTH_LINE.get(growth, "").format(s=_esc(short), ex=_esc(example))
+        p3 = (f"Biggest lever: <b>{_esc(growth_disp)}</b> — {gline} {_esc(path_why)}")
+        parts.append(f'<p>{p3}</p>')
 
-    return (f'<p class="assess">{p1}</p><p class="assess">{p2}</p><p class="assess">{p3}</p>')
+    return "".join(parts)
 
 
 def build_html(corpus, result, cards, strength, archive_info=None, analysis=None, analysis_note=None,
-               source=None):
+               source=None, history_runs=None):
     a = result["archetype"]
     d = result["dist"]
-    analysis_section = _analysis_section_html(analysis)
-    # When an AI analysis was expected but couldn't be used (no-op'd, empty, or from a
-    # different run), say so plainly instead of letting the template-only report pass as
-    # the full thing. Silent on a plain deterministic run (no --analysis was attempted).
-    analysis_status_html = ""
-    if not analysis_section and analysis_note:
-        analysis_status_html = (
-            '<section><div class="prov">ℹ️ <b>Deterministic report only.</b> '
-            f'{_esc(analysis_note)} — the Sonnet&nbsp;+&nbsp;Opus skill map was not added on top. '
-            'The scores, archetype and dimensions below are still fully computed from your data; '
-            'to add the AI-written skill map, re-run <code>/ai-fluency</code> inside Claude Code.'
-            '</div></section>')
+    has_ai = bool(analysis and isinstance(analysis, dict) and analysis.get("skill_map"))
     days = (corpus.last_ts - corpus.first_ts).days if corpus.first_ts and corpus.last_ts else 0
     active_h = corpus.active_seconds / 3600
-    filtered_total = sum(corpus.filtered.values())
     provisional = len(corpus.real_prompts) < PROVISIONAL_MIN_PROMPTS
-
-    DIM_BLURB = {
-        "Direction": "How clearly you tell the agent what you want before it acts.",
-        "Verification": "Whether changes get checked (tests / build / app) before moving on.",
-        "Context": "Reading a file before editing it — grounded, not blind, changes.",
-        "Iteration": "Correcting precisely instead of thrashing with vague rejections.",
-        "Toolcraft": "Using a healthy range of tools — not forcing everything through one.",
-    }
 
     def dim_rate_line(name):
         det = result["detail"][name]
         if name == "Verification" and det.get("rate") is not None:
-            return f"{det['verified']} of {det['episodes']} edit-bursts verified ({det['rate']*100:.0f}%)"
+            return f"{det['verified']}/{det['episodes']} edit-bursts verified ({det['rate']*100:.0f}%)"
         if name == "Context" and det.get("rate") is not None:
-            return f"{det['grounded']} of {det['total_edits']} edits were grounded in a prior read ({det['rate']*100:.0f}%)"
+            return f"{det['grounded']}/{det['total_edits']} edits read-first ({det['rate']*100:.0f}%)"
         if name == "Direction":
-            return (f"{det['constraint_rate']*100:.0f}% carry a constraint · "
-                    f"{det['artifact_rate']*100:.0f}% name a file/error · {det['intent_rate']*100:.0f}% state a why")
+            return (f"{det['constraint_rate']*100:.0f}% rules · "
+                    f"{det['artifact_rate']*100:.0f}% targets · {det['intent_rate']*100:.0f}% why")
         if name == "Iteration":
-            return f"{det['corrections']} correction turns ({det['correction_rate']*100:.0f}% of prompts); {det['specificity']*100:.0f}% were specific"
+            return f"{det['corrections']} corrections ({det['correction_rate']*100:.0f}%); {det['specificity']*100:.0f}% specific"
         if name == "Toolcraft":
-            return f"{det.get('distinct', 0)} distinct tools, evenness {det.get('evenness', 0.0):.2f}, {det.get('delegation_events', 0)} delegations"
+            return f"{det.get('distinct', 0)} tools · evenness {det.get('evenness', 0.0):.2f} · {det.get('delegation_events', 0)} delegations"
         return ""
 
-    # source-aware framing (single tool vs the combined all-sources picture)
+    # source-aware framing
     combined = bool(result.get("combined"))
     srcs = result.get("sources") or []
     if combined:
-        tool_list = ", ".join(NICE_SOURCE.get(s["source"], s["source"]) for s in srcs)
-        sub_line = (f"One picture of how you actually build with AI — measured from your real "
-                    f"prompts and the agents' real actions across {tool_list}, analyzed "
-                    f"entirely on your machine.")
-        hero_srcline = (f'<div class="rawnote">one score across {len(srcs)} tools · '
-                        f'{len(corpus.real_prompts):,} prompts</div>')
+        tool_list = " · ".join(NICE_SOURCE.get(s["source"], s["source"]) for s in srcs)
+        meta_line = f"{tool_list} · {len(corpus.real_prompts):,} prompts · {days}d span"
+        hero_srcline = f'<div class="g-subline">{len(srcs)} tools blended · {len(corpus.real_prompts):,} prompts</div>'
+        agent_noun = "your AI tools"
     else:
         nice_src = NICE_SOURCE.get(source, source or "Claude Code")
-        sub_line = (f"A read of how you actually drive {nice_src} — measured from your real "
-                    f"prompts and the agent's real actions, analyzed entirely on your machine.")
+        meta_line = f"{nice_src} · {len(corpus.real_prompts):,} prompts · {days}d span"
         hero_srcline = ""
+        agent_noun = nice_src
 
-    # combined runs: the source-mix panel (per-tool sub-scores, honestly labeled)
+    # Hero Visuals: Gauge + 5-Axis Radar + Compact Driving Style (with inline archetype bars!)
+    gauge_html = _svg_gauge(result["overall"], result["band"], result["overall_raw"], hero_srcline)
+    radar_html = _svg_radar(result)
+    arch_blurb = a["blurb"]
+    if combined or source not in (None, "claude-code", "claude-desktop"):
+        arch_blurb = arch_blurb.replace("let Claude pick", "let the agent pick")
+    aff_rows = []
+    for sim, nm in a["all"]:
+        pct = max(4, round((sim + 1) / 2 * 100))
+        is_top = " top" if nm == a["primary"] else ""
+        aff_rows.append(
+            f'<div class="mini-bar{is_top}"><span>{PROTOTYPES[nm]["emoji"]} {_esc(nm)}</span>'
+            f'<b><i style="width:{pct}%"></i></b><em>{sim:+.2f}</em></div>'
+        )
+    arch_hedge = (
+        f'<div class="mini-warn">Provisional ({len(corpus.real_prompts)} prompts) — style may shift.</div>'
+        if provisional else ""
+    )
+
+    # Multi-source section: source cards + color-coded Tool x Dimension Heatmap
     source_mix_html = ""
     if combined and srcs:
-        tiles = ""
+        tiles = []
         for s in srcs:
-            na_note = (f'<div class="sm-na">{", ".join(disp(n) for n in s["not_measurable"])} '
-                       f'not measurable</div>') if s["not_measurable"] else ""
-            tiles += (f'<div class="src"><div class="sn">{_esc(NICE_SOURCE.get(s["source"], s["source"]))}</div>'
-                      f'<div class="sv">{s["overall"]}<span class="hint">/100</span> '
-                      f'<span class="sb">{_esc(s["band"])}</span></div>'
-                      f'<div class="sd">{s["real_prompts"]:,} prompts · {s["sessions"]} sessions · '
-                      f'{s["active_hours"]:.0f} h</div>{na_note}</div>')
+            na_note = (f'<span class="sm-na">{", ".join(disp(n) for n in s["not_measurable"])} n/a</span>'
+                       if s["not_measurable"] else "")
+            tone = "ok" if s["overall"] >= 75 else ("warn" if s["overall"] < 55 else "acc")
+            tiles.append(
+                f'<div class="src">'
+                f'<div class="src-top"><span class="sn">{_esc(NICE_SOURCE.get(s["source"], s["source"]))}</span>'
+                f'<span class="sb">{_esc(s["band"])}</span></div>'
+                f'<div class="sv">{s["overall"]}<span>/100</span></div>'
+                f'<div class="sbar"><i class="{tone}" style="width:{s["overall"]}%"></i></div>'
+                f'<div class="sd">{s["real_prompts"]:,} prompts · {s["sessions"]} sess · {s["active_hours"]:.0f} h {na_note}</div>'
+                f'</div>'
+            )
+        cmp_html = ""
+        if len(srcs) >= 2 and all(isinstance(s.get("dims"), dict) for s in srcs):
+            th = "<th>Dimension</th>" + "".join(
+                f'<th>{_esc(NICE_SOURCE.get(s["source"], s["source"]))}</th>' for s in srcs
+            )
+            rows = []
+            for dname in WEIGHTS:
+                cells = []
+                for s in srcs:
+                    v = s["dims"].get(dname)
+                    if v is None:
+                        cells.append('<td class="hm na">—</td>')
+                    else:
+                        iv = int(round(v))
+                        tier = "hm-hi" if iv >= 75 else ("hm-lo" if iv < 55 else "hm-mid")
+                        cells.append(f'<td class="hm {tier}">{iv}</td>')
+                rows.append(f'<tr><td>{_esc(disp(dname))}</td>{"".join(cells)}</tr>')
+            cmp_html = (
+                '<div class="cmp-wrap">'
+                '<div class="subh">How your habits compare across tools <span class="muted-sm">(heatmap · “—” = not logged)</span></div>'
+                f'<table class="cmp"><thead><tr>{th}</tr></thead>'
+                f'<tbody>{"".join(rows)}</tbody></table></div>'
+            )
         source_mix_html = (
             '<section><h3>Where this comes from</h3>'
-            '<p class="exgen" style="margin-bottom:12px">Per-tool sub-scores, measured '
-            'independently. The headline above blends each dimension only from the tools that '
-            'can observe it, weighted by how much evidence each contributed — a tool that '
-            'can\'t show a habit never drags it down.</p>'
-            f'<div class="src-grid">{tiles}</div></section>')
+            f'<div class="src-grid">{"".join(tiles)}</div>{cmp_html}</section>'
+        )
 
-    # dimension bars — masked (not-measurable) dimensions render last, without a score
-    dim_html = ""
+    # Unified Skill Map — Tufte bullet-chart rows (used both nested under 4Ds and standalone!)
+    skill_by_dim = {sk["dim"]: sk for sk in _skill_levels(result)}
     na_set = set(result.get("na_dims") or [])
     src_label = source or "this source"
+    honesty_na_html = ""
     if na_set:
         names = ", ".join(disp(n) for n in WEIGHTS if n in na_set)
         verb = "is" if len(na_set) == 1 else "are"
-        dim_html += (f'<div class="honesty" style="margin-bottom:14px"><b>{_esc(names)}</b> {verb} not '
-                     f'observable in {_esc(src_label)} logs, so the overall score is re-weighted over '
-                     f'the measurable dimensions — an unobservable habit is never guessed or scored as 0.</div>')
+        honesty_na_html = (
+            f'<div class="notice"><b>{_esc(names)}</b> {verb} not observable in {_esc(src_label)} logs — '
+            f'excluded rather than guessed (weights renormalized).</div>'
+        )
+
+    dim_rows = []
+    det_rows = []
     order = sorted((n for n in WEIGHTS if n not in na_set),
                    key=lambda n: result["shrunk"][n], reverse=True)
     for name in list(order) + [n for n in WEIGHTS if n in na_set]:
         if name in na_set:
-            dim_html += f"""
-      <div class="dim">
-        <div class="top"><span class="name">{_esc(disp(name))} <span class="tag ld">not measurable</span></span><span class="sval">—</span></div>
-        <p class="def">{_esc(DIM_BLURB[name])}</p>
-        <p class="rate">not observable in {_esc(src_label)} logs · excluded from the score (weights renormalized)</p>
-      </div>"""
+            na_row = (
+                f'<div class="trow na-row">'
+                f'<div class="trow-l"><b>{_esc(disp(name))}</b> <span class="tag ld">not measurable</span>'
+                f'<div class="trow-r">Not observable in {_esc(src_label)} logs</div></div>'
+                f'<div class="trow-m"><div class="bullet"></div></div>'
+                f'<div class="trow-s">—</div></div>'
+            )
+            dim_rows.append(na_row)
+            det_rows.append(na_row)
             continue
+
         sc = round(result["shrunk"][name])
-        raw_sc = round(result["raw"][name])
-        c = result["conf"][name]
-        lowdata = c < 0.75
+        lowdata = result["conf"][name] < 0.75
         tag = ""
         if name == strength:
             tag = '<span class="tag s">Strength</span>'
-        elif name == cards[0]["dim"]:
-            tag = '<span class="tag w">Top growth lever</span>'
+        elif cards and name == cards[0]["dim"]:
+            tag = '<span class="tag w">Top lever</span>'
         ld = '<span class="tag ld">low data</span>' if lowdata else ""
-        dim_html += f"""
-      <div class="dim">
-        <div class="top"><span class="name">{_esc(disp(name))} {tag}{ld}</span><span class="sval">{sc}<span class="hint">/100</span></span></div>
-        <div class="bar"><i style="width:{sc}%"></i></div>
-        <p class="def">{_esc(DIM_BLURB[name])}</p>
-        <p class="rate">{_esc(dim_rate_line(name))}<span class="wt"> · weight {int(WEIGHTS[name]*100)}%</span>{_dim_sources_note(result, name, len(srcs))}</p>
-      </div>"""
+        tone = "ok" if sc >= 75 else ("bad" if sc < 55 else "acc")
+        rate_str = _esc(dim_rate_line(name))
+        src_note = _dim_sources_note(result, name, len(srcs))
+        wt = int(WEIGHTS[name] * 100)
 
-    # archetype affinity
-    aff = ""
-    for sim, nm in a["all"]:
-        pct = max(0, round((sim + 1) / 2 * 100))
-        aff += f"""<div class="bar-item"><div class="bl">{PROTOTYPES[nm]['emoji']} {_esc(nm)}</div>
-          <div class="bt"><i style="width:{pct}%"></i></div><div class="bv">{sim:+.2f}</div></div>"""
+        dim_rows.append(
+            f'<div class="trow">'
+            f'<div class="trow-l"><b>{_esc(disp(name))}</b> {tag}{ld}'
+            f'<div class="trow-r">{rate_str}<span class="wt"> · {wt}% wt</span>{src_note}</div></div>'
+            f'<div class="trow-m"><div class="bullet"><i class="{tone}" style="width:{sc}%"></i>'
+            f'<b class="tick" style="left:85%" title="Target 85"></b></div></div>'
+            f'<div class="trow-s">{sc}<span>/100</span></div></div>'
+        )
+        sk = skill_by_dim[name]
+        det_rows.append(
+            f'<div class="trow det-row">'
+            f'<div class="trow-l"><b>{_esc(disp(name))}</b> {tag}{ld}'
+            f'<div class="trow-r">{rate_str}<span class="wt"> · {wt}% wt</span>{src_note}</div>'
+            f'<div class="trow-coach"><span>Now:</span> {_esc(sk["now"])} &nbsp;<b>Next →</b> {_esc(sk["next"])}</div></div>'
+            f'<div class="trow-m"><div class="trow-lvl">{_dots_html(sk["level"])} <span>Level {sk["level"]}/5</span></div>'
+            f'<div class="bullet"><i class="{tone}" style="width:{sc}%"></i>'
+            f'<b class="tick" style="left:85%" title="Target 85"></b></div></div>'
+            f'<div class="trow-s">{sc}<span>/100</span></div></div>'
+        )
 
-    # data-ingested filter breakdown
-    filt = "".join(
-        f"<li><b>{v:,}</b> {_esc(k)}</li>" for k, v in corpus.filtered.most_common()
+    dim_table_html = honesty_na_html + '<div class="tufte">' + "".join(dim_rows) + '</div>'
+    det_table_html = honesty_na_html + '<div class="tufte">' + "".join(det_rows) + '</div>'
+
+    if has_ai:
+        skill_map_section = _analysis_section_html(analysis, dim_html=dim_table_html)
+    else:
+        skill_map_section = f'<section><h3>Your skill map</h3>{det_table_html}</section>'
+
+    analysis_status_html = ""
+    if not has_ai and analysis_note:
+        analysis_status_html = (
+            '<div class="prov">ℹ️ <b>Deterministic report only.</b> '
+            f'{_esc(analysis_note)} — the Sonnet&nbsp;+&nbsp;Opus skill map was not added. '
+            'Re-run <code>/ai-fluency</code> inside Claude Code to include it.</div>'
+        )
+
+    ai_read = (analysis.get("overall_read") or analysis.get("summary")) if has_ai else None
+    coach_read_html = (
+        f'<div class="takeaway"><div class="tk-k">Coach takeaway</div><p>{_esc(ai_read)}</p></div>'
+        if ai_read else
+        _verdict_strip_html(corpus, result, cards, strength)
     )
 
-    # Archive stat tile + the "why ~30 days / how to see more" callout.
-    archive_tile = retention_note = ""
-    arch_dir_disp = _esc(archive_info["dir"]) if archive_info else _esc(DEFAULT_ARCHIVE_DIR)
-    if archive_info:
-        archive_tile = (f'<div class="ing"><div class="n">{archive_info["archived_sessions"]:,}</div>'
-                        f'<div class="l">sessions in your archive</div></div>')
-    # Show the explainer whenever the visible history is short — that's the 30-day cleanup biting.
-    if days <= 32:
-        grew = ""
-        if archive_info and archive_info.get("enabled"):
-            grew = (f' This run preserved <b>{archive_info["new"]:,}</b> new session(s) to your '
-                    f'archive (<code>{arch_dir_disp}</code>), so from here your history keeps growing '
-                    f'past the 30-day wall. Keep this archive private to you — sharing one folder '
-                    f'between people would mix everyone\'s transcripts into a single report.')
-        retention_note = (
-            '<div class="honesty" style="margin-top:14px">'
-            f'<b>Why only ~{days} days?</b> Claude Code deletes transcripts older than your '
-            '<code>cleanupPeriodDays</code> setting (default <b>30</b>), so that is all that was '
-            'left on disk to read — not a limit of this tool. To analyze more history: '
-            '<b>(1)</b> raise <code>cleanupPeriodDays</code> in <code>~/.claude/settings.json</code> '
-            '(e.g. <code>"cleanupPeriodDays": 365</code>) to stop the deletion; '
-            f'<b>(2)</b> keep running AI Fluency.{grew}'
-            '</div>')
-
-    # action cards (what/where/how)
+    # Deterministic evidence quotes & growth cards (featured #1 + collapsed #2 accordion)
     def evidence_html(card):
         name = card["dim"]
         ev = card["weak"]
         if not ev:
-            return '<p class="ev-none">No clear examples in your transcripts — this is already a habit. ✓</p>'
-        items = ""
-        # small-sample guard per project
+            return '<span class="ev-none">No weak moments spotted — already a habit. ✓</span>'
         proj_counts = Counter(p["project"] for p in corpus.real_prompts)
+        items = []
         for e in ev[:3]:
-            if name == "Direction" or name == "Iteration":
+            src_tag = f" · {_esc(NICE_SOURCE.get(e['source'], e['source']))}" if e.get("source") else ""
+            if name in ("Direction", "Iteration"):
                 proj = e["project"]; txt = _scrub_paths(e["text"])
-                small = " <em>(illustrative, small sample)</em>" if proj_counts.get(proj, 0) < 10 else ""
-                items += f'<li>“{_esc(txt[:140])}” <span class="loc">— {_esc(_project_label(proj))}{small}</span></li>'
+                small = " (small sample)" if proj_counts.get(proj, 0) < 10 else ""
+                items.append(f'<li>“{_esc(txt[:120])}” <span class="loc">— {_esc(_project_label(proj))}{src_tag}{small}</span></li>')
             elif name == "Context":
-                small = " <em>(illustrative)</em>" if proj_counts.get(e["project"], 0) < 10 else ""
-                items += f'<li>Edited <code>{_esc(os.path.basename(e["file"]))}</code> without reading it first <span class="loc">— {_esc(_project_label(e["project"]))}{small}</span></li>'
+                items.append(f'<li>Edited <code>{_esc(os.path.basename(e["file"]))}</code> without reading first <span class="loc">— {_esc(_project_label(e["project"]))}{src_tag}</span></li>')
             elif name == "Verification":
-                small = " <em>(illustrative)</em>" if proj_counts.get(e["project"], 0) < 10 else ""
-                items += f'<li>A burst of edits to <code>{_esc(e["files"])}</code> with nothing run afterwards <span class="loc">— {_esc(_project_label(e["project"]))}{small}</span></li>'
-        return f"<ul class='ev'>{items}</ul>"
+                items.append(f'<li>Edits to <code>{_esc(e["files"])}</code> with no check after <span class="loc">— {_esc(_project_label(e["project"]))}{src_tag}</span></li>')
+        return f'<ul class="mini-ev">{"".join(items)}</ul>'
 
-    cards_html = ""
+    det_featured = ""
+    det_more = []
     for i, card in enumerate(cards[:2]):
         name = card["dim"]
         t = SKILL_TEACH[name]
-        # These before/after pairs are a fixed teaching library, identical for every user
-        # with this weak dimension — they are NOT drawn from this person's transcripts.
-        # Label them as such so they can never be mistaken for a personalized rewrite (the
-        # personalized signal is the "Where this shows up in your sessions" block above).
-        ex_html = "".join(
-            f'<div class="ba"><div class="before"><span>Instead of</span>“{_esc(e["before"])}”</div>'
-            f'<div class="after"><span>Stronger</span>“{_esc(e["after"])}”</div></div>'
-            for e in t["examples"]
+        ex = t["examples"][0]
+        ba_det = (
+            f'<div class="gwhere"><span class="subk">From your sessions</span>{evidence_html(card)}</div>'
+            f'<p class="ghow"><b>Move:</b> {_esc(t["practice"])}</p>'
+            f'<p class="exgen">Generic illustration — <b>not</b> from your sessions:</p>'
+            f'<div class="ba">'
+            f'<div class="before"><div class="ba-h"><span>Instead of</span></div><p>“{_esc(ex["before"])}”</p></div>'
+            f'<div class="after"><div class="ba-h"><span>Stronger</span>'
+            f'<button type="button" class="copy-btn" onclick="copyPrompt(this)">Copy</button></div>'
+            f'<p class="copy-src">“{_highlight_prompt_html(ex["after"])}”</p></div></div>'
         )
-        cards_html += f"""
-      <div class="card prio">
-        <div class="ph">Priority {i+1} · {_esc(disp(name))} <span class="pscore">now {card['score']}/100</span></div>
-        <h4>{_esc(t['what_it_is'])}</h4>
-        <p class="why"><b>Why it matters.</b> {_esc(t['why_it_matters'])}</p>
-        <div class="wwh"><span class="lab">Where this shows up in your sessions</span>{evidence_html(card)}</div>
-        <div class="wwh"><span class="lab">How to grow it</span><p class="how">{_esc(t['how_to_improve'])}</p>
-          <p class="exgen">Generic illustrations of the habit — <b>not</b> from your sessions:</p>
-          {ex_html}
-        </div>
-        <p class="tgt">🎯 Try this next session: {_esc(t['practice'])}</p>
-      </div>"""
+        if i == 0:
+            det_featured = (
+                f'<div class="gcard featured">'
+                f'<div class="focus-k">🎯 Start here · 01 · #1 move ({_esc(disp(name))})</div>'
+                f'<div class="gcard-h" style="margin-top:6px"><div class="gtitle"><h4>{_esc(disp(name))}</h4>'
+                f'<p class="gwhy">{_esc(t["why_it_matters"])}</p></div>'
+                f'<div class="gbadges"><span class="pill">{card["score"]}/100</span></div></div>'
+                f'{ba_det}</div>'
+            )
+        else:
+            det_more.append(
+                f'<details class="gmore"><summary>'
+                f'<span class="gnum">0{i + 1}</span><b>{_esc(disp(name))}</b>'
+                f'<span class="pill">{card["score"]}/100</span>'
+                f'<span class="gmore-t">{_esc(t["practice"][:64])}…</span><span class="gmore-c">Expand ▾</span>'
+                f'</summary><div class="gmore-body">{ba_det}</div></details>'
+            )
 
-    # strength callout — lead with the user's signature (self-driven) strength.
-    # Floor the praise: if even the best dimension is weak, frame it as "relatively
-    # strongest" rather than asserting a mastered habit the rate-line would contradict.
+    # Top merged Start-here focus card + right-hand Score Upside & Keep-doing-this column
+    ai_featured, ai_more = _growth_cards_html(analysis)
+    if ai_featured:
+        featured_card = ai_featured
+        more_cards = ai_more
+    else:
+        featured_card = det_featured
+        more_cards = "".join(det_more)
+
+    impact_html = _impact_chart_html(cards)
     s_det = dim_rate_line(strength)
     strong_score = round(result["shrunk"][strength])
-    if strong_score >= 55:
-        strength_head = "Keep doing this"
-        strength_body = (f"{_esc(SKILL_TEACH[strength]['good_looks_like'])} The evidence in your "
-                         f"sessions: {_esc(s_det)}. This is your foundation — build on it.")
-    else:
-        strength_head = "Your relatively strongest area"
-        strength_body = (f"Even your strongest dimension has room to grow ({strong_score}/100), but this "
-                         f"is the most natural place to build from. The evidence in your sessions: "
-                         f"{_esc(s_det)}.")
-    strength_html = f"""
-      <div class="card keep">
-        <div class="ph">{strength_head} · {_esc(disp(strength))} <span class="pscore">{strong_score}/100</span></div>
-        <p>{strength_body}</p>
-      </div>"""
+    s_head = "Keep doing this" if strong_score >= 55 else "Strongest base"
+    strength_card = (
+        f'<div class="keep-card"><div class="keep-k">✓ {s_head} · {_esc(disp(strength))} ({strong_score}/100)</div>'
+        f'<div class="keep-v">{_esc(s_det)}</div></div>'
+    )
+    side_col_html = f'<div class="side-col">{impact_html}{strength_card}</div>'
 
-    # skill map (levels)
-    skill_levels = _skill_levels(result)
-    skill_html = ""
-    for sk in skill_levels:
-        dots = "".join(
-            f'<span class="dot {"on" if i < sk["level"] else ""}"></span>' for i in range(5)
+    # Interactive Rewrite Dojo + 1-click Drop-In Guardrail Rules
+    dojo_html = _dojo_html(corpus, cards, analysis=analysis if has_ai else None)
+    rules_src = (srcs[0]["source"] if (combined and len(srcs) == 1) else (None if combined else source))
+    rules_html = _rules_generator_html(corpus, cards, source=rules_src)
+    action_row_html = f'<div class="action-row">{dojo_html}{rules_html}</div>'
+
+    # Prompt Anatomy + Your Best Prompts
+    best_prompts_html = _best_prompts_html(_best_prompts(corpus), anatomy_html=_prompt_anatomy_html(result))
+
+    # Session Trajectory + Project Breakdown + First-Try vs Retry Spiral
+    fallback_caps = {
+        "prompts": True, "edits": True,
+        "verify": "Verification" not in na_set,
+        "reads": "Context" not in na_set,
+        "delegation": "Toolcraft" not in na_set,
+    }
+    patterns_html = _patterns_section_html(
+        corpus, result, fallback_caps=fallback_caps,
+        history=history_runs if "history_runs" in locals() else None,
+    )
+
+    # Archive tile + conditional Claude Code 30-day retention note
+    archive_tile = retention_note = ""
+    arch_dir_disp = _esc(archive_info["dir"]) if archive_info else _esc(DEFAULT_ARCHIVE_DIR)
+    if archive_info:
+        archive_tile = (f'<div class="kpi"><div class="n">{archive_info["archived_sessions"]:,}</div>'
+                        f'<div class="l">sessions in your archive</div></div>')
+    has_claude_code = (
+        (not combined and source in (None, "claude-code"))
+        or (combined and any(s["source"] == "claude-code" for s in srcs))
+    )
+    if days <= 32 and has_claude_code:
+        grew = (f' Preserved <b>{archive_info["new"]:,}</b> new session(s) to <code>{arch_dir_disp}</code>.'
+                if (archive_info and archive_info.get("enabled")) else "")
+        retention_note = (
+            f'<div class="notice" style="margin-top:12px"><b>Why ~{days} days?</b> Claude Code deletes transcripts '
+            f'older than <code>cleanupPeriodDays</code> (default 30). Raise it in <code>~/.claude/settings.json</code> '
+            f'(e.g. <code>"cleanupPeriodDays": 365</code>) to keep a full year.{grew}</div>'
         )
-        skill_html += f"""<div class="skill">
-          <div class="sk-top"><span class="sk-name">{_esc(sk['name'])} <span class="lvl">Level {sk['level']}/5</span></span><span class="sk-dots">{dots}</span></div>
-          <p class="sk-what">{_esc(sk['what'])}</p>
-          <p class="sk-now"><b>You're here:</b> {_esc(sk['now'])}</p>
-          <p class="sk-next"><b>Next move:</b> {_esc(sk['next'])}</p></div>"""
 
-    prov_banner = ""
-    if provisional:
-        prov_banner = (f'<div class="prov">⚠️ Provisional: only {len(corpus.real_prompts)} real prompts found — '
-                       f'treat the score as a rough range (±10). It sharpens as you use Claude Code more.</div>')
-    # On thin data the archetype is the least stable signal (a near-neutral vector lands on
-    # whichever prototype is closest by a hair), so hedge it explicitly rather than asserting it.
-    arch_hedge = ""
-    if provisional:
-        arch_hedge = ('<p style="margin-top:8px;font-size:12.5px;color:var(--warn)">Provisional — based on only '
-                      f'{len(corpus.real_prompts)} prompt(s); the archetype can shift as more history accumulates.</p>')
+    prov_banner = (
+        f'<div class="prov">⚠️ Provisional: {len(corpus.real_prompts)} real prompts — treat score as ±10; '
+        f'sharpens as you build with {_esc(agent_noun)} more.</div>'
+        if provisional else ""
+    )
 
-    # fun facts
-    facts = [
-        f"{len(corpus.real_prompts)} prompts you actually typed (out of {corpus.user_records:,} user records — the rest were tool output, subagent turns or system text)",
-        f"median prompt is {d.get('median_chars','?')} characters ({d.get('median_words','?')} words); {d.get('under_80_pct','?')}% are under 80 chars",
-        f"{active_h:.0f} hours of hands-on time (idle gaps over 5 min excluded)",
-        f"{result['detail']['Toolcraft']['distinct']} distinct tools used; {corpus.total_tool_calls:,} tool calls in total",
-        f"most-used tool: {corpus.tool_usage.most_common(1)[0][0] if corpus.tool_usage else 'n/a'}",
-        f"{corpus.delegation_events} delegations (subagents / background jobs / planning)",
-    ]
-    facts_html = "".join(f"<li>{_esc(f)}</li>" for f in facts)
-    assessment_html = build_assessment(corpus, result, cards)
-
-    # "What to improve": prefer the Opus analysis's tailored growth cards (grounded in this
-    # person's real prompts). Only fall back to the generic teaching examples when no AI
-    # analysis ran — so a finished report is personalized, not a library of stock examples.
-    growth_cards = _growth_cards_html(analysis)
-    if growth_cards:
-        improve_cards = growth_cards
-        improve_intro = ('<p class="exgen" style="margin-bottom:14px">Written for you by Claude '
-                         'Opus&nbsp;4.8 from your real prompts — your highest-leverage moves, each '
-                         'with one of your prompts rewritten.</p>')
+    low_dims = [disp(n) for n in (result.get("measurable") or list(WEIGHTS)) if result["conf"].get(n, 1.0) < 0.75]
+    if low_dims:
+        low_data_note = f'On this run, {", ".join(low_dims)} had limited data and {"is" if len(low_dims) == 1 else "are"} flagged “low data”.'
     else:
-        improve_cards = cards_html
-        improve_intro = ""
+        low_data_note = "All measured dimensions reached strong data confidence on this run."
+
+    data_viz_html = _data_visuals_html(corpus)
 
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Your AI Fluency Report</title>
 <style>
-:root{{--bg:#0c0d18;--p:#15172a;--p2:#1d2040;--ink:#eef0ff;--mut:#a4a8cc;--line:#2a2d52;
---ac:#7c5cff;--ac2:#3ad6c9;--good:#3ad68a;--warn:#ffb454;--bad:#ff6b8b;}}
+:root{{
+  --bg:#f6f5f0;--surface:#ffffff;--inset:#f0efe9;--line:#e4e2da;--track:#e8e6de;
+  --ink:#161615;--ink2:#3f3e3a;--mut:#6d6c66;
+  --accent:#2563eb;--accent-soft:rgba(37,99,235,.12);
+  --ok:#15803d;--ok-bg:#eaf7ee;--ok-bd:#bbf0cb;
+  --warn:#b45309;--warn-bg:#fef6e6;--warn-bd:#f7d89c;
+  --bad:#be123c;--bad-bg:#fef0f2;--bad-bd:#f8c4ce;
+  --hl-t:rgba(37,99,235,.14);--hl-r:rgba(180,83,9,.16);--hl-w:rgba(14,116,144,.14);--hl-v:rgba(21,128,61,.16);
+}}
+[data-theme="dark"]{{
+  --bg:#101214;--surface:#171a1e;--inset:#1f2329;--line:#292e36;--track:#262b33;
+  --ink:#f3f4f6;--ink2:#d1d5db;--mut:#8f96a3;
+  --accent:#60a5fa;--accent-soft:rgba(96,165,250,.15);
+  --ok:#34d399;--ok-bg:rgba(52,211,153,.11);--ok-bd:rgba(52,211,153,.28);
+  --warn:#fbbf24;--warn-bg:rgba(251,191,36,.11);--warn-bd:rgba(251,191,36,.28);
+  --bad:#fb7185;--bad-bg:rgba(251,113,133,.11);--bad-bd:rgba(251,113,133,.28);
+  --hl-t:rgba(96,165,250,.22);--hl-r:rgba(251,191,36,.22);--hl-w:rgba(34,211,238,.18);--hl-v:rgba(52,211,153,.22);
+}}
 *{{box-sizing:border-box;margin:0;padding:0}}
-body{{background:radial-gradient(1100px 640px at 72% -12%,#262a55 0%,var(--bg) 55%);color:var(--ink);
-font:16px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;padding-bottom:80px}}
-.wrap{{max-width:880px;margin:0 auto;padding:0 22px}}
-header{{text-align:center;padding:60px 0 12px}}
-.kick{{letter-spacing:.22em;text-transform:uppercase;font-size:12px;color:var(--mut)}}
-h1{{font-size:34px;margin:10px 0 4px}}
-.sub{{color:var(--mut);max-width:620px;margin:6px auto 0;font-size:15px}}
-.hero{{margin:30px auto 0;display:flex;gap:22px;align-items:stretch;flex-wrap:wrap;justify-content:center}}
-.score-card{{background:linear-gradient(135deg,var(--p2),var(--p));border:1px solid var(--line);border-radius:22px;
-padding:26px 30px;text-align:center;min-width:240px;box-shadow:0 18px 50px rgba(0,0,0,.4)}}
-.ring{{position:relative;width:170px;height:170px;margin:0 auto}}
-.ring .n{{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}}
-.ring .n b{{font-size:50px;line-height:1}}
-.ring .n s{{text-decoration:none;color:var(--mut);font-size:13px}}
-.band{{margin-top:12px;font-size:19px;font-weight:700;color:var(--ac2)}}
-.rawnote{{color:var(--mut);font-size:12px;margin-top:4px}}
-.arch{{flex:1;min-width:260px;background:var(--p);border:1px solid var(--line);border-radius:22px;padding:24px 26px;text-align:left}}
-.arch .emoji{{font-size:40px}}
-.arch h2{{font-size:23px;margin:6px 0}}
-.arch p{{color:var(--mut);font-size:15px}}
-.prov{{background:rgba(255,180,84,.1);border:1px solid rgba(255,180,84,.35);color:#ffe6c2;border-radius:12px;padding:12px 16px;margin:22px 0 0;font-size:14px}}
-section{{margin:42px 0}}
-h3{{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--mut);border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:18px}}
-.band-meaning{{background:var(--p);border:1px solid var(--line);border-left:4px solid var(--ac);border-radius:12px;padding:16px 20px;color:#dfe2ff}}
-.assess{{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin-bottom:12px;font-size:15.5px;line-height:1.7;color:#e8eaff}}
-.assess b{{color:#fff}}
-.ingest{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}}
-.ing{{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:14px 16px}}
-.ing .n{{font-size:24px;font-weight:700;color:var(--ac2)}}
-.ing .l{{color:var(--mut);font-size:13px;margin-top:2px}}
-.honesty{{margin-top:16px;background:var(--p);border:1px solid var(--line);border-radius:14px;padding:16px 20px}}
-.honesty b{{color:var(--ink)}}
-.honesty ul{{list-style:none;display:flex;flex-wrap:wrap;gap:8px 22px;margin-top:8px}}
-.honesty li{{color:var(--mut);font-size:14px}}
-.dim{{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin-bottom:12px}}
-.dim .top{{display:flex;justify-content:space-between;align-items:baseline}}
-.dim .name{{font-weight:700;font-size:17px}}
-.dim .sval{{font-size:22px;font-weight:800}} .dim .hint{{color:var(--mut);font-size:12px;font-weight:400}}
-.dim-h{{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:6px}}
-.dim-h b{{font-size:17px}}
-.pill{{font-size:12px;font-weight:700;color:var(--ink);background:var(--p2);border:1px solid var(--line);border-radius:99px;padding:3px 11px;white-space:nowrap}}
-.ev{{margin:8px 0 0 0;padding-left:18px}} .ev li{{color:var(--mut);font-size:14px;margin:3px 0}}
-.next{{margin-top:8px;font-size:14.5px}} .next b{{color:#fff}}
-.bar{{height:9px;background:#23264a;border-radius:99px;overflow:hidden;margin:11px 0 9px}}
-.bar>i{{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--ac),var(--ac2))}}
-.def{{color:var(--ink);font-size:14.5px}} .rate{{color:var(--mut);font-size:13px;margin-top:3px}} .wt{{opacity:.7}}
-.tag{{font-size:10.5px;padding:2px 8px;border-radius:99px;font-weight:700;margin-left:6px;vertical-align:middle}}
-.tag.s{{background:rgba(58,214,138,.16);color:var(--good)}} .tag.w{{background:rgba(255,107,139,.16);color:var(--bad)}}
-.tag.ld{{background:rgba(164,168,204,.16);color:var(--mut)}}
-.bar-item{{display:flex;align-items:center;gap:12px;margin:7px 0}}
-.bl{{min-width:160px;font-size:14px}} .bt{{flex:1;height:7px;background:#23264a;border-radius:99px;overflow:hidden}}
-.bt>i{{display:block;height:100%;background:linear-gradient(90deg,var(--ac),var(--ac2))}} .bv{{min-width:46px;text-align:right;color:var(--mut);font-size:13px}}
-.card{{background:var(--p);border:1px solid var(--line);border-radius:16px;padding:18px 22px;margin-bottom:14px}}
-.prio{{border-left:4px solid var(--warn)}} .keep{{border-left:4px solid var(--good)}}
-.ph{{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--mut)}}
-.pscore{{float:right;color:var(--ac2);letter-spacing:0}}
-.card h4{{font-size:18px;margin:8px 0 12px}}
-.wwh{{margin:12px 0}} .wwh .lab{{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);margin-bottom:6px}}
-ul.ev{{list-style:none}} ul.ev li{{background:var(--p2);border-radius:9px;padding:9px 12px;margin-bottom:7px;font-size:14px}}
-.loc{{color:var(--mut);font-size:12.5px}} .ev-none{{color:var(--good);font-size:14px}}
-.ba{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px}}
-.why{{color:var(--mut);font-size:14px;margin:2px 0 4px}} .why b{{color:var(--ink)}}
-.how{{font-size:14.5px;margin:0 0 4px}}
-.exgen{{font-size:12px;color:var(--mut);margin:8px 0 2px;font-style:italic}}
-.sk-what{{color:var(--ink);font-size:13.5px;margin-top:5px}}
-.lvl{{font-size:11px;color:var(--ac2);font-weight:600;margin-left:6px}}
-.before,.after{{border-radius:10px;padding:10px 13px;font-size:14px}}
-.before{{background:rgba(255,107,139,.08);color:#ffd0da}} .after{{background:rgba(58,214,138,.08);color:#cfeede}}
-.before span,.after span{{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.08em;opacity:.7;margin-bottom:3px}}
-.tgt{{margin-top:10px;color:var(--ac2);font-size:14px}}
-.skill{{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:14px 18px;margin-bottom:10px}}
-.sk-top{{display:flex;justify-content:space-between;align-items:center}} .sk-name{{font-weight:700}}
-.dot{{display:inline-block;width:11px;height:11px;border-radius:50%;background:#2a2d52;margin-left:4px}}
-.dot.on{{background:linear-gradient(135deg,var(--ac),var(--ac2))}}
-.sk-now{{color:var(--mut);font-size:13.5px;margin-top:6px}} .sk-next{{font-size:13.5px;margin-top:3px}}
-.facts{{list-style:none}} .facts li{{background:var(--p);border:1px solid var(--line);border-radius:10px;padding:11px 15px;margin-bottom:8px;font-size:14.5px}}
-.facts li::before{{content:"›";color:var(--ac2);font-weight:800;margin-right:9px}}
-details{{background:var(--p);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin-top:14px}}
-summary{{cursor:pointer;color:var(--mut);font-size:14px}} details p,details li{{color:var(--mut);font-size:13px;margin-top:8px}}
-footer{{text-align:center;color:var(--mut);font-size:13px;margin-top:46px}}
-code{{background:#23264a;padding:1px 6px;border-radius:5px;font-size:13px}}
-.src-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}}
-.src{{background:var(--card);border:1px solid #23264a;border-radius:12px;padding:14px 16px}}
-.src .sn{{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut)}}
-.src .sv{{font-size:26px;font-weight:700;margin-top:4px}}
-.src .sv .sb{{font-size:12px;font-weight:400;color:var(--mut);margin-left:6px}}
-.src .sd{{font-size:12px;color:var(--mut);margin-top:6px}}
-.src .sm-na{{font-size:11.5px;color:var(--warn);margin-top:6px}}
-.works{{margin:10px 0 0 18px;font-size:13px;color:var(--mut)}}
-.works li{{margin-top:4px}}
-.gain{{margin-top:10px;font-size:13px;color:var(--ok,#3ad6c9)}}
-@media(max-width:640px){{.ba{{grid-template-columns:1fr}}.bl{{min-width:120px}}}}
+body{{background:var(--bg);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,sans-serif;
+  -webkit-font-smoothing:antialiased;padding-bottom:72px;font-variant-numeric:tabular-nums}}
+.wrap{{max-width:1040px;margin:0 auto;padding:0 24px}}
+.topbar{{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:24px 0 18px;border-bottom:1px solid var(--line);flex-wrap:wrap}}
+.brand{{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}}
+.brand h1{{font-size:20px;font-weight:700;letter-spacing:-.02em}}
+.brand .meta{{font-size:13px;color:var(--mut)}}
+.theme-btn{{background:var(--surface);color:var(--ink2);border:1px solid var(--line);border-radius:8px;padding:6px 12px;
+  font-size:12.5px;font-weight:600;cursor:pointer}}
+.theme-btn:hover{{border-color:var(--accent);color:var(--accent)}}
+.prov{{background:var(--warn-bg);border:1px solid var(--warn-bd);color:var(--ink);border-radius:10px;padding:10px 14px;margin-top:16px;font-size:13.5px}}
+.hero{{display:grid;grid-template-columns:230px 1fr 290px;gap:14px;margin-top:20px;align-items:stretch}}
+.panel{{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px 20px}}
+.panel-k{{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--mut);display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px}}
+.legend-t{{font-weight:500;letter-spacing:0;text-transform:none;color:var(--ok);font-size:11px}}
+.gauge-wrap{{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%}}
+.gauge-svg{{width:190px;max-width:100%;height:auto;overflow:visible}}
+.g-num{{font-size:44px;font-weight:800;fill:var(--ink);letter-spacing:-.03em}}
+.g-sub{{font-size:12px;fill:var(--mut)}}
+.g-band{{font-size:14px;font-weight:700;fill:var(--accent)}}
+.g-meta{{display:flex;gap:10px;font-size:11.5px;color:var(--mut);margin-top:4px;flex-wrap:wrap;justify-content:center}}
+.g-subline{{font-size:11.5px;color:var(--mut);margin-top:4px;text-align:center}}
+.radar-wrap{{display:flex;flex-direction:column;height:100%}}
+.radar-svg{{width:100%;max-height:230px;margin:auto 0}}
+.r-lbl{{font-size:11px;fill:var(--ink2);font-weight:600}}
+.r-lbl.na{{fill:var(--mut);font-weight:500}}
+.r-val{{fill:var(--ink);font-weight:800}}
+.arch-h{{display:flex;align-items:center;gap:8px;margin-bottom:4px}}
+.arch-h h2{{font-size:17px;font-weight:700;letter-spacing:-.015em}}
+.arch-b{{font-size:13px;color:var(--mut);margin-bottom:12px;line-height:1.45}}
+.mini-bar{{display:grid;grid-template-columns:126px 1fr 38px;align-items:center;gap:8px;font-size:12px;color:var(--mut);margin:5px 0}}
+.mini-bar.top{{color:var(--ink);font-weight:600}}
+.mini-bar b{{display:block;height:6px;background:var(--track);border-radius:99px;overflow:hidden}}
+.mini-bar b>i{{display:block;height:100%;background:var(--mut);border-radius:99px;opacity:.45}}
+.mini-bar.top b>i{{background:var(--accent);opacity:1}}
+.mini-bar em{{font-style:normal;text-align:right;font-size:11.5px}}
+.mini-warn{{font-size:11.5px;color:var(--warn);margin-top:8px}}
+.takeaway{{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:13px 18px;margin-top:14px;font-size:14px;color:var(--ink2);line-height:1.55}}
+.takeaway b{{color:var(--ink)}}
+.tk-k{{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--accent);margin-bottom:4px}}
+.verdict-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}}
+.vcard{{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 15px}}
+.vk{{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--mut)}}
+.v-ok .vk{{color:var(--ok)}} .v-warn .vk{{color:var(--warn)}} .v-acc .vk{{color:var(--accent)}}
+.vt{{font-size:15.5px;font-weight:700;color:var(--ink);margin:3px 0 2px}}
+.vs{{font-size:12.5px;color:var(--mut);line-height:1.4}}
+section{{margin:30px 0}}
+h3{{font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--mut);padding-bottom:8px;border-bottom:1px solid var(--line);margin-bottom:14px}}
+.subh{{font-size:12px;font-weight:700;color:var(--ink2);margin:18px 0 8px;display:flex;align-items:center;gap:8px}}
+.muted-sm{{font-size:12px;color:var(--mut);font-weight:400}}
+.focus-row{{display:grid;grid-template-columns:1.5fr 1fr;gap:14px;margin-bottom:12px;align-items:stretch}}
+.side-col{{display:flex;flex-direction:column;gap:12px}}
+.focus-k{{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--accent)}}
+.impact-box{{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 18px;flex:1;display:flex;flex-direction:column;justify-content:center}}
+.imp-row{{display:grid;grid-template-columns:104px 1fr 56px;align-items:center;gap:10px;margin:5px 0;font-size:12.5px}}
+.imp-n{{color:var(--ink2);font-weight:600}}
+.imp-tr{{height:8px;background:var(--track);border-radius:99px;overflow:hidden}}
+.imp-tr i{{display:block;height:100%;border-radius:99px}}
+.imp-tr i.bad{{background:var(--bad)}} .imp-tr i.warn{{background:var(--warn)}}
+.imp-v{{text-align:right;font-weight:700;color:var(--ink);font-size:12px}}
+.keep-card{{background:var(--ok-bg);border:1px solid var(--ok-bd);border-radius:12px;padding:13px 16px}}
+.keep-k{{font-weight:700;color:var(--ok);font-size:13px}}
+.keep-v{{color:var(--ink2);font-size:12.5px;margin-top:2px}}
+.gcard{{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 20px}}
+.gcard.featured{{margin-bottom:0}}
+.gcard-h{{display:flex;align-items:flex-start;gap:12px;justify-content:space-between;flex-wrap:wrap}}
+.gnum{{font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:11.5px;font-weight:700;color:var(--mut);
+  background:var(--inset);border:1px solid var(--line);border-radius:6px;padding:2px 7px}}
+.gtitle{{flex:1;min-width:200px}}
+.gtitle h4{{font-size:16px;font-weight:700;letter-spacing:-.01em;color:var(--ink)}}
+.gwhy{{font-size:13px;color:var(--mut);margin-top:2px}}
+.gbadges{{display:flex;gap:6px;align-items:center;flex-wrap:wrap}}
+.pill{{font-size:11px;font-weight:600;color:var(--ink2);background:var(--inset);border:1px solid var(--line);border-radius:99px;padding:2px 9px;white-space:nowrap}}
+.tool-tag{{font-size:11px;font-weight:700;color:var(--accent);background:var(--accent-soft);border-radius:99px;padding:2px 9px;white-space:nowrap}}
+.ghow{{font-size:13.5px;color:var(--ink2);margin:8px 0}}
+.gwhere{{margin:8px 0 6px}}
+.subk{{display:block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);margin-bottom:4px}}
+.exgen{{font-size:12px;color:var(--mut);font-style:italic;margin:6px 0}}
+.ba{{display:grid;grid-template-columns:1fr 1.35fr;gap:10px;margin-top:6px}}
+.before,.after{{border-radius:10px;padding:11px 13px;font-size:13px;font-family:ui-monospace,'SF Mono',Menlo,monospace;line-height:1.55}}
+.before{{background:var(--bad-bg);border:1px solid var(--bad-bd);color:var(--ink)}}
+.after{{background:var(--ok-bg);border:1px solid var(--ok-bd);color:var(--ink)}}
+.ba-h{{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;font-family:-apple-system,BlinkMacSystemFont,'Inter',sans-serif}}
+.ba-h span{{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--mut)}}
+.copy-btn{{background:var(--surface);color:var(--ink2);border:1px solid var(--line);border-radius:6px;padding:2px 8px;font-size:11px;font-weight:600;cursor:pointer}}
+.copy-btn:hover{{border-color:var(--ok);color:var(--ok)}}
+.works-chips{{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}}
+.works-chips span{{font-size:11.5px;color:var(--ink2);background:var(--inset);border:1px solid var(--line);border-radius:7px;padding:2px 8px}}
+details.gmore{{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:0;margin-top:10px;overflow:hidden}}
+details.gmore>summary{{display:flex;align-items:center;gap:10px;padding:11px 16px;cursor:pointer;list-style:none;font-size:13.5px;color:var(--ink);flex-wrap:wrap}}
+details.gmore>summary::-webkit-details-marker{{display:none}}
+details.gmore>summary b{{font-weight:600}}
+.gmore-t{{color:var(--mut);font-size:12.5px;flex:1;min-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.gmore-c{{font-size:11.5px;color:var(--accent);font-weight:600;margin-left:auto}}
+.gmore-body{{padding:0 16px 14px;border-top:1px solid var(--line);padding-top:12px}}
+.action-row{{display:grid;grid-template-columns:1.15fr 1fr;gap:14px;margin-top:14px}}
+.action-card{{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:15px 18px}}
+.dchips{{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}}
+.dchip{{background:var(--inset);color:var(--ink2);border:1px solid var(--line);border-radius:99px;padding:3px 10px;font-size:11.5px;cursor:pointer;font-family:ui-monospace,'SF Mono',Menlo,monospace}}
+.dchip.active{{background:var(--accent-soft);color:var(--accent);border-color:var(--accent);font-weight:600}}
+.dojo-in{{width:100%;border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:var(--inset);color:var(--ink);
+  font:13px/1.5 ui-monospace,'SF Mono',Menlo,monospace;resize:vertical}}
+.dojo-in:focus{{outline:2px solid var(--accent-soft);border-color:var(--accent)}}
+.dojo-lights{{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px}}
+.dl{{font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:var(--inset);color:var(--mut);border:1px solid var(--line)}}
+.dl.on{{background:var(--ok-bg);color:var(--ok);border-color:var(--ok-bd)}}
+.dojo-score{{font-size:11px;font-weight:700;color:var(--accent);text-transform:none;letter-spacing:0}}
+.dojo-btns{{margin-left:auto;display:flex;gap:6px}}
+.dojo-peek{{margin-top:8px;padding:8px 10px;border-radius:8px;background:var(--ok-bg);border:1px solid var(--ok-bd);font:12px/1.45 ui-monospace,'SF Mono',Menlo,monospace;color:var(--ink)}}
+.rftabs{{display:inline-flex;gap:4px}}
+.rftab{{background:var(--inset);color:var(--mut);border:1px solid var(--line);border-radius:6px;padding:2px 7px;font-size:10.5px;font-weight:700;cursor:pointer;text-transform:none;letter-spacing:0}}
+.rftab.active{{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}}
+.rules-pre{{background:var(--inset);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font:12px/1.5 ui-monospace,'SF Mono',Menlo,monospace;
+  color:var(--ink);white-space:pre-wrap;word-break:break-word}}
+mark{{color:inherit;border-radius:4px;padding:0 3px;font-weight:500}}
+mark.hl-t{{background:var(--hl-t)}} mark.hl-r{{background:var(--hl-r)}} mark.hl-w{{background:var(--hl-w)}} mark.hl-v{{background:var(--hl-v)}}
+.hl-key{{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--mut);margin-bottom:10px}}
+.anat-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}}
+.anat{{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px}}
+.anat-top{{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px}}
+.anat-l{{font-size:12.5px;font-weight:600;color:var(--ink2)}}
+.anat-v{{font-size:18px;font-weight:800}}
+.anat-v.ok{{color:var(--ok)}} .anat-v.warn{{color:var(--warn)}} .anat-v.bad{{color:var(--bad)}}
+.anat-s{{font-size:11.5px;color:var(--mut);margin-top:6px}}
+.bullet{{position:relative;height:8px;background:var(--track);border-radius:99px;overflow:visible}}
+.bullet>i{{display:block;height:100%;border-radius:99px}}
+.bullet>i.ok{{background:var(--ok)}} .bullet>i.acc{{background:var(--accent)}} .bullet>i.warn{{background:var(--warn)}} .bullet>i.bad{{background:var(--bad)}}
+.bullet .tick{{position:absolute;top:-3px;width:2px;height:14px;background:var(--ink);opacity:.45;border-radius:1px}}
+.best-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}}
+.best-card{{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:8px}}
+.best-top{{display:flex;justify-content:space-between;align-items:center}}
+.best-loc{{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--mut)}}
+.best-q{{font-size:13px;color:var(--ink);font-family:ui-monospace,'SF Mono',Menlo,monospace;line-height:1.55;flex:1}}
+.best-chips{{display:flex;flex-wrap:wrap;gap:5px}}
+.hchip{{font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--ok-bg);color:var(--ok);border:1px solid var(--ok-bd)}}
+.empty-box{{background:var(--surface);border:1px dashed var(--line);border-radius:12px;padding:14px 16px;font-size:13.5px;color:var(--mut)}}
+.viz-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}}
+.viz-grid.two{{grid-template-columns:repeat(2,1fr)}}
+.viz-card{{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px}}
+.traj-svg{{width:100%;height:auto;display:block}}
+.tr-v{{font-size:10px;font-weight:700;fill:var(--ink)}}
+.tr-x{{font-size:10px;fill:var(--mut)}}
+.delta-pill{{font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:99px;text-transform:none;letter-spacing:0}}
+.delta-pill.ok{{background:var(--ok-bg);color:var(--ok)}} .delta-pill.bad{{background:var(--bad-bg);color:var(--bad)}} .delta-pill.acc{{background:var(--accent-soft);color:var(--accent)}}
+.proj-row{{display:grid;grid-template-columns:108px 1fr 62px;align-items:center;gap:9px;margin:7px 0;font-size:12px}}
+.proj-n{{color:var(--ink2);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.proj-m{{text-align:right;color:var(--mut);font-size:11.5px}} .proj-m b{{color:var(--ink)}}
+.comp-grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}}
+.comp-card{{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:15px 17px;display:flex;flex-direction:column;gap:7px}}
+.comp-h{{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}}
+.comp-h b{{font-size:15.5px}}
+.comp-lvl{{display:inline-flex;align-items:center;gap:8px}}
+.segs{{display:inline-flex;gap:3px}}
+.segs i{{display:inline-block;width:12px;height:6px;border-radius:2px;background:var(--track)}}
+.segs i.on{{background:var(--accent)}}
+.comp-s{{font-size:13.5px;color:var(--ink2)}}
+.mini-ev{{list-style:none;display:flex;flex-direction:column;gap:4px}}
+.mini-ev li{{font-size:12.5px;color:var(--mut);background:var(--inset);border-radius:7px;padding:5px 9px}}
+.loc{{color:var(--mut);font-size:11.5px}}
+.comp-next{{font-size:13px;color:var(--ink);padding-top:6px;border-top:1px solid var(--line);margin-top:auto}}
+.comp-next span{{color:var(--accent);font-weight:700}}
+.str-strip{{display:flex;flex-wrap:wrap;align-items:center;gap:7px;margin-top:12px}}
+.str-k{{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);margin-right:4px}}
+.str-chip{{font-size:12.5px;color:var(--ok);background:var(--ok-bg);border:1px solid var(--ok-bd);border-radius:8px;padding:3px 10px}}
+.tufte{{background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}}
+.trow{{display:grid;grid-template-columns:1.5fr 1fr 72px;align-items:center;gap:16px;padding:12px 16px;border-bottom:1px solid var(--line)}}
+.trow:last-child{{border-bottom:none}}
+.trow-l b{{font-size:14.5px}}
+.trow-r{{font-size:12px;color:var(--mut);margin-top:2px}} .wt{{opacity:.75}}
+.trow-coach{{font-size:12.5px;color:var(--ink2);margin-top:5px}} .trow-coach span{{color:var(--mut);font-weight:600}}
+.trow-lvl{{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--mut);margin-bottom:5px}}
+.trow-s{{text-align:right;font-size:18px;font-weight:800}} .trow-s span{{font-size:11px;font-weight:400;color:var(--mut)}}
+.tag{{font-size:10px;padding:2px 7px;border-radius:99px;font-weight:700;margin-left:5px;vertical-align:middle}}
+.tag.s{{background:var(--ok-bg);color:var(--ok)}} .tag.w{{background:var(--bad-bg);color:var(--bad)}} .tag.ld{{background:var(--inset);color:var(--mut)}}
+.notice{{background:var(--inset);border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-size:13px;color:var(--ink2);margin-bottom:10px}}
+.src-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}}
+.src{{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px}}
+.src-top{{display:flex;justify-content:space-between;align-items:center}}
+.src .sn{{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--ink2)}}
+.src .sb{{font-size:11px;color:var(--mut)}}
+.src .sv{{font-size:26px;font-weight:800;margin:4px 0 6px;letter-spacing:-.02em}} .src .sv span{{font-size:12px;font-weight:400;color:var(--mut)}}
+.sbar{{height:6px;background:var(--track);border-radius:99px;overflow:hidden;margin-bottom:8px}}
+.sbar i{{display:block;height:100%;border-radius:99px}}
+.sbar i.ok{{background:var(--ok)}} .sbar i.acc{{background:var(--accent)}} .sbar i.warn{{background:var(--warn)}}
+.src .sd{{font-size:12px;color:var(--mut)}} .sm-na{{color:var(--warn);font-weight:600}}
+.cmp-wrap{{overflow-x:auto}}
+.cmp{{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden;font-size:13.5px}}
+.cmp th,.cmp td{{padding:9px 14px;text-align:center;border-bottom:1px solid var(--line)}}
+.cmp th:first-child,.cmp td:first-child{{text-align:left;font-weight:600;color:var(--ink)}}
+.cmp th{{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);background:var(--inset)}}
+.cmp tr:last-child td{{border-bottom:none}}
+.hm{{font-weight:700}}
+.hm-hi{{background:var(--ok-bg);color:var(--ok)}}
+.hm-mid{{background:var(--inset);color:var(--ink2)}}
+.hm-lo{{background:var(--bad-bg);color:var(--bad)}}
+.hm.na{{color:var(--mut);font-weight:400}}
+.kpi-strip{{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:12px}}
+.kpi{{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:11px 13px}}
+.kpi .n{{font-size:20px;font-weight:800;letter-spacing:-.02em;color:var(--ink)}}
+.kpi .l{{font-size:11.5px;color:var(--mut);margin-top:1px}}
+.stack-bar{{display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--track);gap:2px;margin:8px 0 10px}}
+.stack-bar i{{display:block;height:100%}}
+.seg-real{{background:var(--ok)}} .seg-acc{{background:var(--accent)}}
+.seg-n1{{background:#94a3b8}} .seg-n2{{background:var(--warn)}} .seg-n3{{background:var(--bad)}} .seg-n4{{background:#64748b}}
+.stack-leg{{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:12px;color:var(--mut)}}
+.sw{{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;vertical-align:middle}}
+.sw.real{{background:var(--ok)}} .sw.acc{{background:var(--accent)}}
+.sw.n1{{background:#94a3b8}} .sw.n2{{background:var(--warn)}} .sw.n3{{background:var(--bad)}} .sw.n4{{background:#64748b}}
+.tbar{{display:grid;grid-template-columns:92px 1fr 38px;align-items:center;gap:8px;font-size:12px;color:var(--ink2);margin:5px 0}}
+.tbar span{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.tbar b{{display:block;height:7px;background:var(--track);border-radius:99px;overflow:hidden}}
+.tbar b>i{{display:block;height:100%;background:var(--accent);border-radius:99px}}
+.tbar em{{font-style:normal;text-align:right;color:var(--mut);font-size:11.5px}}
+section details:not(.gmore){{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:11px 15px;margin-top:14px}}
+section details:not(.gmore)>summary{{cursor:pointer;color:var(--mut);font-size:13px;font-weight:600}}
+section details:not(.gmore) p{{color:var(--mut);font-size:12.5px;margin-top:8px;line-height:1.6}}
+.foot-note{{font-size:12px;color:var(--mut);margin-top:10px}}
+code{{background:var(--inset);padding:1px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,'SF Mono',Menlo,monospace}}
+footer{{text-align:center;color:var(--mut);font-size:12.5px;margin-top:40px;padding-top:16px;border-top:1px solid var(--line)}}
+@media(max-width:860px){{.hero,.focus-row,.action-row,.verdict-grid,.comp-grid,.viz-grid,.viz-grid.two{{grid-template-columns:1fr}}.anat-grid{{grid-template-columns:repeat(2,1fr)}}}}
+@media(max-width:640px){{.ba{{grid-template-columns:1fr}}.trow{{grid-template-columns:1fr;gap:8px}}.trow-s{{text-align:left}}}}
 </style></head><body><div class="wrap">
 
-<header>
-  <div class="kick">AI Fluency Report</div>
-  <h1>How skillfully you build with AI</h1>
-  <p class="sub">{_esc(sub_line)}</p>
-</header>
+<div class="topbar">
+  <div class="brand">
+    <h1>AI Fluency</h1>
+    <span class="meta">{_esc(meta_line)}</span>
+  </div>
+  <button type="button" class="theme-btn" id="themeToggle" onclick="toggleTheme()">☾ Dark</button>
+</div>
 
 {prov_banner}
+{analysis_status_html}
 
 <div class="hero">
-  <div class="score-card">
-    <div class="ring">
-      <svg width="170" height="170" style="transform:rotate(-90deg)">
-        <circle cx="85" cy="85" r="74" fill="none" stroke="#23264a" stroke-width="12"/>
-        <circle cx="85" cy="85" r="74" fill="none" stroke="url(#g)" stroke-width="12" stroke-linecap="round"
-          stroke-dasharray="{2*math.pi*74*result['overall']/100:.0f} 999"/>
-        <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#7c5cff"/><stop offset="1" stop-color="#3ad6c9"/></linearGradient></defs>
-      </svg>
-      <div class="n"><b>{result['overall']}</b><s>/ 100</s></div>
-    </div>
-    <div class="band">{_esc(result['band'])}</div>
-    <div class="rawnote">raw {result['overall_raw']} · confidence-adjusted {result['overall']}</div>
-    {hero_srcline}
-  </div>
-  <div class="arch">
-    <div class="emoji">{PROTOTYPES[a['primary']]['emoji']}</div>
-    <h2>{_esc(a['label'])}</h2>
-    <p>{_esc(a['blurb'])}</p>
-    <p style="margin-top:10px;font-size:13px">Closest match {a['primary_sim']:+.2f}, next is {_esc(a['secondary'].replace('The ',''))} {a['secondary_sim']:+.2f}{' — close, so this is a blend' if a['blended'] else ''}. Built from how <b>you</b> drive — your briefs, corrections, tool choices and how much you hand off ({a['delegation_score']}/100 delegation) — and it deliberately discounts the read-before-edit and run-the-tests habits Claude does on its own, so it reflects you, not the agent.</p>
-    <p style="margin-top:8px;font-size:12.5px;color:var(--mut)">Your <b>score</b> measures the quality of the collaboration (you + Claude); your <b>archetype</b> measures your driving style alone — so they can differ on purpose.</p>
+  <div class="panel">{gauge_html}</div>
+  <div class="panel">{radar_html}</div>
+  <div class="panel">
+    <div class="panel-k">Driving style <span>{a['delegation_score']}/100 delegation</span></div>
+    <div class="arch-h"><h2>{_esc(a['label'])}</h2></div>
+    <p class="arch-b">{_esc(arch_blurb)}</p>
+    {"".join(aff_rows)}
     {arch_hedge}
   </div>
 </div>
 
-{source_mix_html}
-
-<section>
-  <h3>Professional assessment</h3>
-  {assessment_html}
-</section>
-
-<section>
-  <h3>What your score means</h3>
-  <div class="band-meaning"><b>{_esc(result['band'])} ({result['overall']}/100).</b> {_esc(result['band_meaning'])}</div>
-</section>
-
-<section>
-  <h3>How much data this is based on</h3>
-  <div class="ingest">
-    <div class="ing"><div class="n">{corpus.files}</div><div class="l">sessions scanned</div></div>
-    <div class="ing"><div class="n">{len(corpus.projects)}</div><div class="l">projects</div></div>
-    <div class="ing"><div class="n">{corpus.total_bytes/1e6:.1f} MB</div><div class="l">transcript data parsed</div></div>
-    <div class="ing"><div class="n">{days} days</div><div class="l">span of activity</div></div>
-    <div class="ing"><div class="n">{len(corpus.real_prompts)}</div><div class="l">real prompts you typed</div></div>
-    <div class="ing"><div class="n">{active_h:.0f} h</div><div class="l">hands-on active time</div></div>
-    {archive_tile}
-  </div>
-  {retention_note}
-  <div class="honesty">
-    <b>The honest part:</b> we found {corpus.user_records:,} “user” records but only <b>{len(corpus.real_prompts)}</b> are prompts <b>you</b> typed. We filtered out {filtered_total:,} that the old tool wrongly counted:
-    <ul>{filt}</ul>
-    <p style="color:var(--mut);font-size:13px;margin-top:10px">Your real prompts: median {d.get('median_chars','?')} chars · {d.get('under_80_pct','?')}% under 80 chars · {active_h:.0f} h hands-on active time (idle gaps over 5 min are excluded — not raw wall-clock).</p>
-  </div>
-</section>
-
-{analysis_section}
-{analysis_status_html}
-
-<section>
-  <h3>The five dimensions</h3>
-  {dim_html}
-</section>
+{coach_read_html}
 
 <section>
   <h3>What to improve — and exactly how</h3>
-  {improve_intro}
-  {improve_cards}
-  {strength_html}
+  <div class="focus-row">{featured_card}{side_col_html}</div>
+  {more_cards}
+  {action_row_html}
 </section>
 
-<section>
-  <h3>Your skill map</h3>
-  {skill_html}
-</section>
+{best_prompts_html}
+
+{patterns_html}
+
+{skill_map_section}
+
+{source_mix_html}
 
 <section>
-  <h3>Archetype affinity</h3>
-  {aff}
-</section>
-
-<section>
-  <h3>Honest numbers at a glance</h3>
-  <ul class="facts">{facts_html}</ul>
-</section>
-
-<section>
-  <h3>Methodology &amp; honesty</h3>
-  <details><summary>How every number was computed (click to expand)</summary>
-    <p><b>Only real prompts are scored.</b> A “user” record counts as a prompt only if it is not a tool-result, not a subagent (sidechain) turn, not meta/injected, not a slash-command stub, and not a paste/system-prompt over {MAX_HUMAN_PROMPT_CHARS:,} chars or opening with “You are …”. This removes the contamination that made the old tool report a {d.get('mean_chars','?')}-vs-real average.</p>
-    <p><b>Everything is a rate, then squashed.</b> Each dimension is a per-prompt or per-opportunity rate run through min(1, rate/target), so doing more work never raises the score — only doing it better does. Weights: Briefing 24%, Verification 22%, Context-setting 22%, Iteration 18%, Toolcraft 14%.</p>
-    <p><b>Thin signals are hedged, not faked.</b> Each dimension is pulled toward a neutral 50 in proportion to how many opportunities it had (e.g. Iteration had only {result['detail']['Iteration']['corrections']} corrections, so it is flagged “low data”). Both raw and confidence-adjusted scores are shown.</p>
-    <p><b>Archetype</b> describes your <b>driving style</b>, not the collaboration's quality, so it is built on a separate <b>agency-weighted</b> vector: Briefing, Iteration, Toolcraft and Delegation (handoffs to subagents/background jobs/planning) count fully, while Verification and Context — habits Claude largely does on its own — are discounted ({int(AGENCY['Verification']*100)}% and {int(AGENCY['Context']*100)}% weight). It is the nearest prototype by cosine on z-scored values; if the top two are within {ARCHETYPE_MARGIN} we show a blend. <b>Active time</b> caps idle gaps at {GAP_CAP_SECONDS//60} min. <b>Fixes vs v1:</b> prompt mis-count, length inflation, idle-time over-count, random archetype, uncapped tool-diversity, and keyword “error” false-positives.</p>
-    <p><b>Limits:</b> this measures observable behavior, not intent; detectors are heuristic and English-biased; it's a single snapshot, not a trend. Terse prompts that carry intent from the prior turn can under-score Direction.</p>
+  <h3>How much data this is based on</h3>
+  <div class="kpi-strip">
+    <div class="kpi"><div class="n">{len(corpus.real_prompts):,}</div><div class="l">real prompts</div></div>
+    <div class="kpi"><div class="n">{corpus.files}</div><div class="l">sessions</div></div>
+    <div class="kpi"><div class="n">{len(corpus.projects)}</div><div class="l">projects</div></div>
+    <div class="kpi"><div class="n">{days}d</div><div class="l">span</div></div>
+    <div class="kpi"><div class="n">{active_h:.0f}h</div><div class="l">active time</div></div>
+    <div class="kpi"><div class="n">{corpus.total_bytes/1e6:.1f} MB</div><div class="l">parsed</div></div>
+    {archive_tile}
+  </div>
+  {data_viz_html}
+  {retention_note}
+  <details><summary>Methodology &amp; honesty (click to expand)</summary>
+    <p><b>Only real prompts are scored.</b> Tool results, subagent turns, meta/injected harness blocks, and pastes over {MAX_HUMAN_PROMPT_CHARS:,} chars are stripped before scoring.</p>
+    <p><b>Rate-based &amp; saturated.</b> Every dimension is a per-prompt or per-opportunity rate passed through min(1, rate/target) so volume can never inflate the score. Weights: Briefing 24%, Verification 22%, Context-setting 22%, Iteration 18%, Toolcraft 14%.</p>
+    <p><b>Confidence shrinkage.</b> Thin dimensions pull toward 50 in proportion to opportunity count. {_esc(low_data_note)}</p>
+    <p><b>Agency separation.</b> Score rates the collaboration; archetype rates your driving style alone, discounting agent-driven Verification ({int(AGENCY['Verification']*100)}%) and Context ({int(AGENCY['Context']*100)}%). Active time caps idle gaps at {GAP_CAP_SECONDS//60} min.</p>
+    <p><b>Limits:</b> Heuristic and English-biased; terse conversational follow-ups can under-score Briefing.</p>
   </details>
 </section>
 
 <footer>Generated locally by AI Fluency v2 · your transcripts never left this machine.</footer>
-</div></body></html>"""
+</div>
+<script>
+function toggleTheme(){{
+  var r=document.documentElement,d=r.getAttribute('data-theme')==='dark';
+  r.setAttribute('data-theme',d?'light':'dark');
+  var b=document.getElementById('themeToggle');
+  if(b)b.textContent=d?'☾ Dark':'☀ Light';
+}}
+function _copyTxt(txt,btn,lbl){{
+  function ok(){{btn.textContent='Copied ✓';setTimeout(function(){{btn.textContent=lbl;}},1600);}}
+  function fb(){{var t=document.createElement('textarea');t.value=txt;t.style.position='fixed';t.style.opacity='0';document.body.appendChild(t);t.select();try{{document.execCommand('copy');ok();}}catch(e){{}}document.body.removeChild(t);}}
+  if(navigator.clipboard&&navigator.clipboard.writeText){{navigator.clipboard.writeText(txt).then(ok,fb);}}else{{fb();}}
+}}
+function copyPrompt(btn){{
+  var p=btn.closest('.after').querySelector('.copy-src');
+  if(!p)return;
+  _copyTxt(p.textContent.replace(/^[“"]|[”"]$/g,''),btn,'Copy');
+}}
+function copyPre(btn){{
+  var p=btn.closest('.rules-card').querySelector('.copy-src');
+  if(p)_copyTxt(p.textContent,btn,'Copy rule block');
+}}
+function setRuleFile(btn,fn){{
+  var card=btn.closest('.rules-card');
+  card.querySelectorAll('.rftab').forEach(function(b){{b.classList.remove('active');}});
+  btn.classList.add('active');
+  var nm=card.querySelector('.rf-name');
+  if(nm)nm.textContent=fn;
+}}
+function dojoEval(ta){{
+  var card=ta.closest('.dojo'),t=ta.value||'';
+  var has={{
+    target:/([\\w./\\-]+\\.(py|js|ts|tsx|jsx|html|css|md|json|sh|ya?ml|toml|rs|go|java)|`[^`]+`|\\b\\w+\\(\\)|\\/\\w+\\/\\w+)/i.test(t),
+    rule:/\\b(only|must|should|shouldn't|don't|do not|never|always|keep|ensure|instead of|without|except|exactly|\\d+(px|ms|s|%|\\s+rows?|\\s+chunks?))\\b/i.test(t),
+    why:/\\b(so that|because|in order to|for the|so it|so we|so i|to prevent|to avoid)\\b/i.test(t),
+    check:/\\b(pytest|unittest|jest|vitest|npm test|npm run|ruff|mypy|tsc|curl|run (the )?(tests?|suite|build|lint|checks?)|verify|confirm)\\b/i.test(t)
+  }};
+  var n=0;
+  card.querySelectorAll('.dl').forEach(function(el){{
+    var ok=!!has[el.getAttribute('data-k')];
+    el.classList.toggle('on',ok);
+    if(ok)n++;
+  }});
+  var sc=card.querySelector('.dojo-score');
+  if(sc)sc.textContent=n+'/4 anchors'+(n===4?' · Ready ✓':'');
+}}
+function dojoPick(btn){{
+  var card=btn.closest('.dojo'),ta=card.querySelector('.dojo-in');
+  card.querySelectorAll('.dchip').forEach(function(b){{b.classList.remove('active');}});
+  btn.classList.add('active');
+  ta.value=btn.getAttribute('data-before')||'';
+  dojoEval(ta);
+  var pk=card.querySelector('.dojo-peek'),pb=card.querySelector('[onclick*="dojoPeek"]');
+  var aft=btn.getAttribute('data-after')||'';
+  if(pk){{pk.style.display='none';pk.setAttribute('data-after',aft);pk.textContent='';}}
+  if(pb){{pb.style.display=aft?'inline-block':'none';}}
+}}
+function dojoPeek(btn){{
+  var card=btn.closest('.dojo'),pk=card.querySelector('.dojo-peek'),aft=pk.getAttribute('data-after')||'';
+  if(!aft)return;
+  if(pk.style.display==='none'){{pk.textContent=aft;pk.style.display='block';}}else{{pk.style.display='none';}}
+}}
+function dojoCopy(btn){{
+  var ta=btn.closest('.dojo').querySelector('.dojo-in');
+  if(ta)_copyTxt(ta.value,btn,'Copy rewrite');
+}}
+document.addEventListener('DOMContentLoaded',function(){{document.querySelectorAll('.dojo-in').forEach(dojoEval);}});
+</script>
+</body></html>"""
 
 
 def _skill_levels(result):
@@ -2712,6 +3897,55 @@ def _load_analysis(args, current_fp):
     return analysis, None, 0
 
 
+def _record_and_read_history(archive_dir, source_key, result, corpus, record=True):
+    """Read and optionally append a tiny score snapshot in <archive>/insight_history.json.
+    Stored as .json (never .jsonl) and skipped when --no-archive or explicit paths are used."""
+    if not archive_dir:
+        return []
+    path = os.path.join(os.path.expanduser(archive_dir), "insight_history.json")
+    hist = []
+    try:
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as fh:
+                loaded = json.load(fh)
+                if isinstance(loaded, list):
+                    hist = loaded
+    except (OSError, json.JSONDecodeError):
+        hist = []
+
+    scoped = [h for h in hist if isinstance(h, dict) and h.get("source") == source_key]
+    fp = result.get("fingerprint")
+    if record and (not scoped or scoped[-1].get("fp") != fp):
+        now = datetime.now()
+        lbl = now.strftime("%b %-d") if sys.platform != "win32" else now.strftime("%b %d")
+        entry = {
+            "ts": now.isoformat(timespec="seconds"),
+            "label": lbl,
+            "source": source_key,
+            "fp": fp,
+            "overall": int(result["overall"]),
+            "prompts": len(corpus.real_prompts),
+        }
+        hist.append(entry)
+        hist = hist[-60:]
+        scoped = [h for h in hist if isinstance(h, dict) and h.get("source") == source_key]
+        tmp = path + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(hist, fh, indent=2)
+            os.replace(tmp, path)
+        except OSError:
+            pass
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+    return scoped
+
+
 def _run_all_sources(args):
     """--source all: every source with data on this machine, combined into ONE report with
     one score and one profile. The blend is honest per dimension: each dimension is scored
@@ -2722,6 +3956,7 @@ def _run_all_sources(args):
               "an explicit path. Pass a specific --source together with the path.", file=sys.stderr)
         return 2
     entries = []
+    archive_info = None
     for adapter in ADAPTERS.values():
         try:
             if not adapter.detect():
@@ -2729,8 +3964,14 @@ def _run_all_sources(args):
         except Exception:
             continue
         files = adapter.discover(None)
-        if files and adapter.archive_enabled:
-            files, _ = _merge_archive(files, adapter, args)
+        if adapter.archive_enabled:
+            files, ainfo = _merge_archive(files, adapter, args)
+            if files or ainfo["archived_sessions"]:
+                if archive_info is None:
+                    archive_info = dict(ainfo)
+                else:
+                    for k in ("live_sessions", "archived_sessions", "merged_sessions", "new", "updated"):
+                        archive_info[k] += ainfo[k]
         if not files:
             continue
         corpus = parse(files, adapter)
@@ -2740,7 +3981,8 @@ def _run_all_sources(args):
         caps = caps(corpus) if caps else adapter.capabilities
         r = analyze(corpus, caps)
         entries.append({"source": adapter.name, "corpus": corpus, "caps": caps,
-                        "overall": r["overall"], "band": r["band"]})
+                        "overall": r["overall"], "band": r["band"],
+                        "dims": {k: round(r["shrunk"][k]) for k in r["measurable"]}})
     if not entries:
         print("No coding-agent transcripts found for any source on this machine.", file=sys.stderr)
         return 1
@@ -2755,7 +3997,7 @@ def _run_all_sources(args):
         return rc
 
     if args.evidence:
-        bundle = build_evidence(merged, result, cards, None,
+        bundle = build_evidence(merged, result, cards, archive_info,
                                 source="combined", capabilities=caps_union)
         text = json.dumps(bundle, indent=2)
         if args.evidence == "-":
@@ -2783,13 +4025,19 @@ def _run_all_sources(args):
                 "real_prompts": len(merged.real_prompts), "filtered": dict(merged.filtered),
                 "active_hours": round(merged.active_seconds / 3600, 1),
                 "prompt_distribution": result["dist"],
+                "archive": archive_info,
             },
         }
         print(json.dumps(payload, indent=2))
         return 0
 
-    html_doc = build_html(merged, result, cards, strength, None, analysis, analysis_note,
-                          source="all sources")
+    hist_runs = _record_and_read_history(
+        args.archive if not args.no_archive else None,
+        "combined", result, merged,
+        record=bool(not args.no_archive and not args.quiet),
+    )
+    html_doc = build_html(merged, result, cards, strength, archive_info, analysis, analysis_note,
+                          source="all sources", history_runs=hist_runs)
     out_path = os.path.abspath(args.out)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
@@ -2800,6 +4048,9 @@ def _run_all_sources(args):
             na = f" · {', '.join(disp(n) for n in s['not_measurable'])} n/a" if s["not_measurable"] else ""
             print(f"    {s['source']}: {s['overall']}/100 ({s['band']}) · "
                   f"{s['real_prompts']} prompts{na}")
+        if archive_info and archive_info["enabled"]:
+            print(f"  Archive: {archive_info['merged_sessions']} sessions preserved at "
+                  f"{archive_info['dir']} ({archive_info['new']} new, {archive_info['updated']} updated this run).")
         print(f"\n  Report: {out_path}\n")
     if not args.no_open:
         try:
@@ -2914,8 +4165,13 @@ def main(argv=None):
         return 0
 
     # Render fully before touching the file, so a render error can't leave a 0-byte report.
+    hist_runs = _record_and_read_history(
+        args.archive if (not args.no_archive and not args.path) else None,
+        adapter.name, result, corpus,
+        record=bool(not args.no_archive and not args.path and not args.quiet),
+    )
     html_doc = build_html(corpus, result, cards, strength, archive_info, analysis, analysis_note,
-                          source=adapter.name)
+                          source=adapter.name, history_runs=hist_runs)
     out_path = os.path.abspath(args.out)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:

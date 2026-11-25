@@ -19,8 +19,8 @@ const FW = (args && args.framework) || '~/.claude/skills/ai-fluency/reference/ai
 
 const COMPETENCIES = [
   { key: 'Delegation',  focus: 'What they hand to the agent vs keep, and how they split work: end-to-end hand-offs vs micro-stepping, sub-agents / background jobs / planning, tool breadth (platform & path awareness). Signals: delegation_events, tool_usage, scope of prompts.' },
-  { key: 'Description',  focus: 'How concretely they brief the agent: do action prompts name a file/error (artifact), carry a constraint, and state a why/acceptance test? Terse offloading vs front-loaded specific briefs. Signals: Direction detail (constraint/artifact/intent rates) + sample prompts.' },
-  { key: 'Discernment',  focus: 'How they evaluate outputs: verification after edit-bursts (tests/build/run), grounding edits in a prior read, correcting precisely (symptom + rule) vs vague rejection. Signals: Verification, Context, Iteration detail. NOTE agency: verification/grounding are partly Claude-driven — credit the USER moderately.' },
+  { key: 'Description',  focus: 'How concretely they brief the agent: do action prompts name a file/error (artifact), carry a constraint, and state a why/acceptance test? Terse offloading vs front-loaded specific briefs. Signals: Direction detail (constraint/artifact/intent rates), sample_prompts, strong_examples, and weak_examples.' },
+  { key: 'Discernment',  focus: 'How they evaluate outputs: verification after edit-bursts (tests/build/run), grounding edits in a prior read, correcting precisely (symptom + rule) vs vague rejection, and vetoing bad agent actions. Signals: Verification, Context, Iteration detail + behavior.signals (permission_denials / tool_rejections when present). NOTE agency: verification/grounding are partly agent-driven — credit the USER moderately.' },
   { key: 'Diligence',    focus: 'Responsibility: verifying before things go live, tearing down what was spun up, owning the result rather than blind-shipping. In a coding transcript this overlaps Discernment — weight the responsibility angle. Signals: verification teardown bonus, grounded edits.' },
 ]
 
